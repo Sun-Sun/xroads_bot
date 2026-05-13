@@ -294,10 +294,18 @@ async def training_download(interaction: discord.Interaction, day: str):
     writer.writerow(["Gw2 Account", "Discord Account", "Discord Ping", "Training Name", "Roles", "Comment"])
     
     for row in data:
-        writer.writerow(list(row)) # No longer need to add an empty string
+        row_list = list(row)
+        
+        # Check the boss name using the dynamic index
+        if row_list[3] == "Qadim the Peerless":
+            row_list[3] = "QTP"
+            
+        writer.writerow(row_list)
     
+    conn.close()
+
     output.seek(0)
-    file = discord.File(fp=io.BytesIO(output.getvalue().encode()), filename=f"signups_{day}.csv")
+    file = discord.File(fp=io.BytesIO(output.getvalue().encode()), filename=f"signups.csv")
     await interaction.response.send_message(file=file)
 
 @bot.tree.command(name="profile_view", description="View your saved GW2 account")
@@ -326,5 +334,46 @@ async def profile_remove(interaction: discord.Interaction):
 
     remove_user_profile(str(interaction.user.id))
     await interaction.followup.send("🗑️ Your profile data has been deleted.", ephemeral=True)
+
+@bot.tree.command(name="training_summary", description="See which bosses have the most signups for a specific day")
+async def training_summary(interaction: discord.Interaction, day: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    conn = sqlite3.connect('raids.db')
+    cursor = conn.cursor()
+    
+    # This query groups by the boss name and counts how many rows (signups) exist for each
+    query = """
+        SELECT training_name, COUNT(*) as signup_count 
+        FROM signups 
+        WHERE signup_date = ? 
+        GROUP BY training_name 
+        ORDER BY signup_count DESC
+    """
+    cursor.execute(query, (day,))
+    results = cursor.fetchall()
+    conn.close()
+
+    if not results:
+        return await interaction.followup.send(f"No signups found for `{day}`.", ephemeral=True)
+
+    # Building the response message
+    embed = discord.Embed(
+        title=f"📊 Training Summary: {day}",
+        color=discord.Color.blue()
+    )
+
+    summary_text = ""
+    for i, (boss, count) in enumerate(results):
+        # Apply the QTP fix here too
+        display_name = "QTP" if boss == "Qadim the Peerless" else boss
+        
+        if i == 0:
+            summary_text += f"🔥 **Most Popular: {display_name} ({count} signups)**\n"
+        else:
+            summary_text += f"• {display_name}: {count} signups\n"
+
+    embed.description = summary_text
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 bot.run(TOKEN)

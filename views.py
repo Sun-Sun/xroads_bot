@@ -85,8 +85,8 @@ class RoleDropdown(discord.ui.Select):
             discord.SelectOption(label="Alacrity Heal", value="alacheal"),
             discord.SelectOption(label="Quickness DPS", value="quickdps"),
             discord.SelectOption(label="Alacrity DPS", value="alacdps"),
-            discord.SelectOption(label="Quickness Heal (Tank)", value="quickheal tank"),
-            discord.SelectOption(label="Alacrity Heal (Tank)", value="alacheal tank"),
+            discord.SelectOption(label="Quickness Heal (Tank)", value="quickhealtank"),
+            discord.SelectOption(label="Alacrity Heal (Tank)", value="alachealtank"),
         ]
         super().__init__(placeholder="Select your roles for these bosses...", min_values=1, max_values=len(options), options=options)
         self.selected_bosses = selected_bosses
