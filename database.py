@@ -30,6 +30,15 @@ def setup_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS leaders (
+            username TEXT PRIMARY KEY,
+            account_name TEXT,
+            rank TEXT, -- 'Commander' or 'Aide'
+            roles TEXT  -- Comma-separated roles (e.g., 'qheal, aheal, dps')
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -99,6 +108,17 @@ def wipe_date(signup_date):
     conn = sqlite3.connect('raids.db')
     cursor = conn.cursor()
     cursor.execute("DELETE FROM signups WHERE signup_date=?", (signup_date,))
+    conn.commit()
+    conn.close()
+
+def save_leader_profile(username, rank, roles):
+    """Inserts or replaces a leader's profile records."""
+    conn = sqlite3.connect('raids.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO leaders (username, rank, roles)
+        VALUES (?, ?, ?)
+    ''', (username, rank, roles))
     conn.commit()
     conn.close()
 

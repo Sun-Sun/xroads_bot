@@ -78,12 +78,30 @@ class PersistentSignupView(discord.ui.View):
 
     @discord.ui.button(label="Sign Up", style=discord.ButtonStyle.green)
     async def signup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        STAFF_ROLES = ["Rookie", "Regular", "Adventurer", "Legend", "Commander", "Aide", "Innkeeper", "Bartender"]
-        is_regular = any(role.name in STAFF_ROLES for role in interaction.user.roles)
         
+        user_role_names = [role.name for role in interaction.user.roles]
+        
+        # They are allowed full access if they have any role higher than Rookie
+        ADVANCED_ROLES = ["Regular", "Adventurer", "Legend", "Commander", "Aide", "Innkeeper", "Bartender", "Squadmaker"]
+        is_regular = any(role in user_role_names for role in ADVANCED_ROLES)
+        
+        # Fallback: If they lack advanced roles but have the Rookie role, gate them
+        # (If your server has no tag roles at all, default to True or False depending on safety preference)
+        if not is_regular and "Rookie" in user_role_names:
+            is_regular = False
+        elif not is_regular:
+            # Default fallback for users with no setup roles yet
+            is_regular = False
+
         from views import UnifiedBossView
         view = UnifiedBossView(is_regular, self.training_date, interaction.message)
-        await interaction.response.send_message("Check the bosses you want to train (use both menus if needed):", view=view, ephemeral=True)
+        
+        if is_regular:
+            msg_text = "Check the bosses you want to train (use multiple menus if needed):"
+        else:
+            msg_text = "🔰 **Rookie Tier Menu:** You only have access to Beginner-classified training runs."
+
+        await interaction.response.send_message(msg_text, view=view, ephemeral=True)
     
     @discord.ui.button(label="Sign Out", style=discord.ButtonStyle.red)
     async def signout(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -282,7 +300,15 @@ async def lock_session(interaction: discord.Interaction, date: str):
     await interaction.followup.send(f"✅ Session for {date} is now visually locked.", ephemeral=True)
 
 @bot.tree.command(name="training_download")
-async def training_download(interaction: discord.Interaction, day: str):
+@discord.app_commands.describe(day="The training day to download (Format: YYYY-MM-DD). Defaults to today if left blank.")
+async def training_download(interaction: discord.Interaction, day: str = None):
+
+    if day is None:
+        # Use a specific timezone (e.g., 'Europe/London' or your local time) 
+        # to ensure "today" matches when your runs actually happen.
+        tz = pytz.timezone('Europe/Berlin') 
+        day = datetime.now(tz).strftime('%Y-%m-%d')
+
     conn = sqlite3.connect('raids.db')
     cursor = conn.cursor()
     # Updated query to include 'comment'
@@ -336,8 +362,15 @@ async def profile_remove(interaction: discord.Interaction):
     await interaction.followup.send("🗑️ Your profile data has been deleted.", ephemeral=True)
 
 @bot.tree.command(name="training_summary", description="See which bosses have the most signups for a specific day")
-async def training_summary(interaction: discord.Interaction, day: str):
+@discord.app_commands.describe(day="The date to check (Format: YYYY-MM-DD). Defaults to today if left blank.")
+async def training_summary(interaction: discord.Interaction, day: str = None):
     await interaction.response.defer(ephemeral=True)
+
+    if day is None:
+        # Use a specific timezone (e.g., 'Europe/London' or your local time) 
+        # to ensure "today" matches when your runs actually happen.
+        tz = pytz.timezone('Europe/Berlin') 
+        day = datetime.now(tz).strftime('%Y-%m-%d')
     
     conn = sqlite3.connect('raids.db')
     cursor = conn.cursor()
@@ -375,5 +408,106 @@ async def training_summary(interaction: discord.Interaction, day: str):
 
     embed.description = summary_text
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="sync_leaders", description="Upload and synchronize your Commander or Aide CSV file")
+@discord.app_commands.describe(file="Drag and drop your roster CSV file here")
+@discord.app_commands.checks.has_permissions(administrator=True) # Protect the roster from normal users
+async def sync_leaders(interaction: discord.Interaction, file: discord.Attachment):
+    # Ensure it's a CSV file
+    if not file.filename.endswith('.csv'):
+        return await interaction.response.send_message("❌ Error: Please upload a valid `.csv` file.", ephemeral=True)
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Read the file content directly from Discord's attachments server
+        file_bytes = await file.read()
+        csv_text = file_bytes.decode('utf-8-sig') # handling potential byte-order-marks gracefully
+        
+        import csv
+        import io
+        from database import save_leader_profile
+        
+        stream = io.StringIO(csv_text)
+        reader = csv.DictReader(stream)
+        
+        # Smart Header detection based on your sheets
+        is_aides_sheet = 'Aides' in reader.fieldnames
+        detected_rank = "Aide" if is_aides_sheet else "Commander"
+        
+        sync_count = 0
+        for row in reader:
+            # Skip empty formatting or meta-description padding rows
+            roles_raw = row.get('roles')
+            if not roles_raw or str(roles_raw).strip().lower() in ['nan', '']:
+                continue
+                
+            # Pick correct name column based on the specific sheet layout
+            if is_aides_sheet:
+                name_raw = row.get('Aides') or row.get('Official name')
+            else:
+                name_raw = row.get('Official name') or row.get('Unnamed: 2')
+                
+            if name_raw and str(name_raw).strip().lower() not in ['nan', '']:
+                clean_name = str(name_raw).strip()
+                clean_roles = str(roles_raw).strip().lower()
+                
+                # Update SQLite database instance records
+                save_leader_profile(username=clean_name, rank=detected_rank, roles=clean_roles)
+                sync_count += 1
+                
+        await interaction.followup.send(
+            f"✅ **Roster Synchronization Complete!**\n"
+            f"Successfully identified layout as **{detected_rank} Sheet**.\n"
+            f"Parsed and updated `{sync_count}` leader profiles into `raids.db`.", 
+            ephemeral=True
+        )
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to parse file due to unexpected formatting error: `{e}`", ephemeral=True)
+
+@bot.tree.command(name="build_squads", description="Visually build and orchestrate raid squads step-by-step")
+@discord.app_commands.describe(day="The date to build squads for (Format: YYYY-MM-DD). Defaults to today.")
+@discord.app_commands.checks.has_permissions(administrator=True)
+async def build_squads(interaction: discord.Interaction, day: str = None):
+    await interaction.response.defer(ephemeral=True)
+    
+    if day is None:
+        tz = pytz.timezone('Europe/Berlin') 
+        day = datetime.now(tz).strftime('%Y-%m-%d')
+        
+    conn = sqlite3.connect('raids.db')
+    cursor = conn.cursor()
+    # Pulls unique bosses that have active signups for the chosen day
+    cursor.execute("SELECT DISTINCT training_name FROM signups WHERE signup_date = ?", (day,))
+    bosses = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    
+    if not bosses:
+        return await interaction.followup.send(f"❌ No active signups found for `{day}` to build squads.", ephemeral=True)
+        
+    embed = discord.Embed(
+        title=f"🛠️ Squad Orchestrator Dashboard: {day}",
+        description="Select a target boss pool below to initialize the step-by-step checklist.",
+        color=discord.Color.blurple()
+    )
+    
+    # This calls the new SquadOrchestratorView which loads your 3-step checklist
+    from views import SquadOrchestratorView
+    view = SquadOrchestratorView(day=day, active_bosses=bosses)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+@bot.tree.command(name="backup_db", description="Download the live database file for local testing")
+@discord.app_commands.checks.has_permissions(administrator=True)
+async def backup_db(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        # Grabs the live database file and attaches it as a private download
+        with open('raids.db', 'rb') as f:
+            discord_file = discord.File(f, filename='raids.db')
+            await interaction.followup.send("📦 Here is your live testing database snapshot:", file=discord_file, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to extract database file: `{e}`", ephemeral=True)
+
 
 bot.run(TOKEN)
