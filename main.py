@@ -479,24 +479,55 @@ async def build_squads(interaction: discord.Interaction, day: str = None):
         
     conn = sqlite3.connect('raids.db')
     cursor = conn.cursor()
-    # Pulls unique bosses that have active signups for the chosen day
-    cursor.execute("SELECT DISTINCT training_name FROM signups WHERE signup_date = ?", (day,))
-    bosses = [row[0] for row in cursor.fetchall()]
+
+    # Query every unique boss running tonight alongside its trainee count
+    cursor.execute("""
+        SELECT training_name, COUNT(*) as signup_count 
+        FROM signups 
+        WHERE signup_date = ? 
+        GROUP BY training_name
+        ORDER BY signup_count DESC
+    """, (day,))
+    
+    rows = cursor.fetchall()
     conn.close()
+
+    if not rows:
+        await interaction.response.send_message(f"❌ No training signups found for {day}.", ephemeral=True)
+        return
+
+    # 🌟 THE AUTO-DETECT MULTIPLIER MATRIX
+    dynamic_squad_options = []
     
-    if not bosses:
-        return await interaction.followup.send(f"❌ No active signups found for `{day}` to build squads.", ephemeral=True)
+    for boss_name, count in rows:
+        # Calculate how many 8-trainee cohorts are needed (always round up)
+        import math
+        needed_squads = math.ceil(count / 8)
         
-    embed = discord.Embed(
-        title=f"🛠️ Squad Orchestrator Dashboard: {day}",
-        description="Select a target boss pool below to initialize the step-by-step checklist.",
-        color=discord.Color.blurple()
-    )
-    
-    # This calls the new SquadOrchestratorView which loads your 3-step checklist
+        # If it needs multiple squads, append them uniquely to the dropdown options array!
+        for i in range(1, needed_squads + 1):
+            dynamic_squad_options.append({
+                "display_label": f"{boss_name} (Squad {i})",
+                "boss_value": boss_name,
+                "squad_suffix": i
+            })
+
     from views import SquadOrchestratorView
-    view = SquadOrchestratorView(day=day, active_bosses=bosses)
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    # 🌟 RESTORED: Re-build the clean master dashboard panel embed
+    dashboard_embed = discord.Embed(
+        title="📊 Raid Night Master Dashboard",
+        description=f"**Target Date:** `{day}`\n"
+                    f"**Detected Cohorts:** {len(dynamic_squad_options)} training block(s) ready.\n\n"
+                    "Select a specific squad block from the dropdown menu below to assign your staff leaders and run the matching matrix draft.",
+        color=discord.Color.dark_purple()
+    )
+    dashboard_embed.set_footer(text="Xroads Raid Orchestration Engine")
+    
+    # Pass this expanded layout into your Orchestrator View
+    # (We'll update SquadOrchestratorView to accept this dictionary list instead of a basic string list)
+    view = SquadOrchestratorView(day=day, active_bosses=dynamic_squad_options)
+    await interaction.followup.send(embed=dashboard_embed, view=view, ephemeral=True)
 
 @bot.tree.command(name="backup_db", description="Download the live database file for local testing")
 @discord.app_commands.checks.has_permissions(administrator=True)

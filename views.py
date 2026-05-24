@@ -192,109 +192,91 @@ class SquadOrchestratorView(discord.ui.View):
     def __init__(self, day: str, active_bosses: list):
         super().__init__(timeout=None)
         self.day = day
-        self.squad_count = 0
-        self.assigned_leads = set()      # Tracks used staff
-        self.assigned_trainees = set()   # Tracks used trainees
-        self.master_csv_rows = []        # 🌟 NEW: Holds all squad data rows until the end
         self.active_bosses = active_bosses
-        
-        # Base Selection Dropdown
-        self.add_item(BossSquadSelector(active_bosses))
-        # 🌟 NEW: Finalize Button added to the bottom of the dashboard view
+        self.master_csv_rows = []
+        self.assigned_leads = set()
+        self.assigned_trainees = set()
+        self.completed_cohorts = set()
+
+        self.add_item(BossSquadSelector(active_bosses, orchestrator_view=self))
         self.add_item(MasterExportButton())
 
-
 class BossSquadSelector(discord.ui.Select):
-    def __init__(self, bosses):
-        options = [discord.SelectOption(label="QTP" if b == "Qadim the Peerless" else b, value=b) for b in bosses]
-        super().__init__(placeholder="🎯 Select a target boss pool...", min_values=1, max_values=1, options=options)
+    def __init__(self, bosses_data: list, orchestrator_view=None):
+        options = []
+        for b in bosses_data:
+            value_string = f"{b['boss_value']}|{b['squad_suffix']}"
+            if orchestrator_view and value_string in orchestrator_view.completed_cohorts:
+                continue
+            options.append(discord.SelectOption(
+                label=b["display_label"],
+                value=value_string
+            ))
+            
+        if not options:
+            options = [discord.SelectOption(label="✅ All cohorts fully compiled!", value="done")]
+            disabled_state = True
+        else:
+            disabled_state = False
+            
+        super().__init__(
+            placeholder="🎯 Select a target training cohort...", 
+            min_values=1, max_values=1, 
+            options=options[:25],
+            disabled=disabled_state
+        )
         
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        selected_boss = self.values[0]
+        if self.values[0] == "done":
+            await interaction.response.defer()
+            return
+
+        selected_raw = self.values[0]
+        boss_name, squad_suffix = selected_raw.split("|")
         
-        # 🌟 THE FIX: Calculate the true squad number dynamically 
-        # based on how many unique squads are already stored in your running cache list!
         if len(self.view.master_csv_rows) == 0:
             current_squad_num = 1
         else:
-            # Look at the 'Squad Number' column (index 4) of the last row added to the master list
             last_recorded_squad = self.view.master_csv_rows[-1][4]
             current_squad_num = last_recorded_squad + 1
         
         squad_setup = {
-            "boss": selected_boss,
+            "boss": boss_name,
             "day": self.view.day,
-            "squad_number": current_squad_num,  # 🚀 Flawless sequential progression (1, 2, 3...)
+            "squad_number": current_squad_num,
+            "squad_instance_label": f"Squad {squad_suffix}",
+            "cohort_key": selected_raw,
             "commanders": [],
             "aides": []
         }
         
-        await send_checklist_step(interaction, squad_setup, self.view, step=1)
-
-
-async def send_checklist_step(interaction: discord.Interaction, squad_setup: dict, orchestrator, step: int):
-    boss_clean = "QTP" if squad_setup["boss"] == "Qadim the Peerless" else squad_setup["boss"]
-    
-    embed = discord.Embed(
-        title=f"📋 Squad Builder Checklist (Group #{squad_setup['squad_number']})",
-        description=f"**Target Boss Run:** {boss_clean}\n**Date:** {squad_setup['day']}\n\n"
-                    f"{'✅' if step > 1 else '👉'} **Step 1: Select Commander(s)**\n"
-                    f"└ *Assigned:* {', '.join(squad_setup['commanders']) if squad_setup['commanders'] else '*None selected yet*'}\n\n"
-                    f"{'✅' if step > 2 else ('👉' if step == 2 else '⏳')} **Step 2: Select Aide(s)**\n"
-                    f"└ *Assigned:* {', '.join(squad_setup['aides']) if squad_setup['aides'] else '*None selected yet*'}\n\n"
-                    f"{'⏳' if step < 3 else '🚀'} **Step 3: Randomly Populate Trainee Roster Lineups**",
-        color=discord.Color.blue()
-    )
-    
-    view = discord.ui.View()
-    conn = sqlite3.connect('raids.db')
-    cursor = conn.cursor()
-    
-    if step == 1:
+        self.view.clear_items()
+        conn = sqlite3.connect('raids.db')
+        cursor = conn.cursor()
         cursor.execute("SELECT username FROM leaders WHERE rank = 'Commander'")
         all_comms = [row[0] for row in cursor.fetchall()]
-        avail = [c for c in all_comms if c.lower() not in orchestrator.assigned_leads]
+        avail = [c for c in all_comms if c.lower() not in self.view.assigned_leads]
+        conn.close()
         
         if avail:
-            view.add_item(ChecklistStaffSelect(squad_setup, orchestrator, avail, current_step=1))
+            self.view.add_item(ChecklistStaffSelect(squad_setup, self.view, avail, current_step=1))
         else:
-            # 🌟 FIX: Provide a dummy option so Discord's form validation clears cleanly
-            disabled_select = discord.ui.Select(
-                placeholder="❌ No unique Commanders available", 
-                disabled=True,
+            self.view.add_item(discord.ui.Select(
+                placeholder="❌ No unique Commanders available", disabled=True,
                 options=[discord.SelectOption(label="None available", value="none")]
-            )
-            view.add_item(disabled_select)
+            ))
             
-        if squad_setup["commanders"]:
-            view.add_item(NextStepButton(squad_setup, orchestrator, next_step=2, label="Next: Select Aides ➔"))
+        self.view.add_item(MasterExportButton())
             
-    elif step == 2:
-        cursor.execute("SELECT username FROM leaders WHERE rank = 'Aide'")
-        all_aides = [row[0] for row in cursor.fetchall()]
-        avail = [a for a in all_aides if a.lower() not in orchestrator.assigned_leads]
-        
-        if avail:
-            view.add_item(ChecklistStaffSelect(squad_setup, orchestrator, avail, current_step=2))
-        else:
-            # 🌟 FIX: Provide a dummy option here as well
-            disabled_select = discord.ui.Select(
-                placeholder="❌ No unique Aides available", 
-                disabled=True,
-                options=[discord.SelectOption(label="None available", value="none")]
-            )
-            view.add_item(disabled_select)
-            
-        view.add_item(NextStepButton(squad_setup, orchestrator, next_step=3, label="Next: Populate Trainees ➔", style=discord.ButtonStyle.success))
-        
-    conn.close()
-    
-    if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-    else:
-        await interaction.response.edit_message(embed=embed, view=view)
-
+        boss_clean = "QTP" if squad_setup["boss"] == "Qadim the Peerless" else squad_setup["boss"]
+        embed = discord.Embed(
+            title=f"📋 Squad Builder Checklist ({squad_setup['squad_instance_label']})",
+            description=f"**Target Boss Run:** {boss_clean}\n**Date:** {squad_setup['day']}\n\n"
+                        f"👉 **Step 1: Select Commander(s)**\n└ *Assigned:* *None selected yet*\n\n"
+                        f"⏳ **Step 2: Select Aide(s)**\n\n⏳ **Step 3: Randomly Populate Trainee Roster Lineups**",
+            color=discord.Color.blue()
+        )
+        await interaction.response.edit_message(embed=embed, view=self.view)
 
 class ChecklistStaffSelect(discord.ui.Select):
     def __init__(self, setup, orchestrator, staff_list, current_step):
@@ -311,175 +293,228 @@ class ChecklistStaffSelect(discord.ui.Select):
         if self.step == 1:
             if chosen_name not in self.setup["commanders"]:
                 self.setup["commanders"].append(chosen_name)
-                # Lock them globally to the entire orchestration session view container
                 self.orchestrator.assigned_leads.add(chosen_name.lower())
         else:
             if chosen_name not in self.setup["aides"]:
                 self.setup["aides"].append(chosen_name)
-                # Lock them globally to the entire orchestration session view container
                 self.orchestrator.assigned_leads.add(chosen_name.lower())
-            
-        await send_checklist_step(interaction, self.setup, self.orchestrator, step=self.step)
 
+        self.orchestrator.clear_items()
+        conn = sqlite3.connect('raids.db')
+        cursor = conn.cursor()
+        
+        if self.step == 1:
+            cursor.execute("SELECT username FROM leaders WHERE rank = 'Commander'")
+            avail = [row[0] for row in cursor.fetchall() if row[0].lower() not in self.orchestrator.assigned_leads]
+            if avail:
+                self.orchestrator.add_item(ChecklistStaffSelect(self.setup, self.orchestrator, avail, current_step=1))
+            else:
+                self.orchestrator.add_item(discord.ui.Select(placeholder="❌ No unique Commanders available", disabled=True, options=[discord.SelectOption(label="None", value="n")]))
+            
+            if self.setup["commanders"]:
+                self.orchestrator.add_item(NextStepButton(self.setup, self.orchestrator, next_step=2, label="Next: Select Aides ➔"))
+        else:
+            cursor.execute("SELECT username FROM leaders WHERE rank = 'Aide'")
+            avail = [row[0] for row in cursor.fetchall() if row[0].lower() not in self.orchestrator.assigned_leads]
+            if avail:
+                self.orchestrator.add_item(ChecklistStaffSelect(self.setup, self.orchestrator, avail, current_step=2))
+            else:
+                self.orchestrator.add_item(discord.ui.Select(placeholder="❌ No unique Aides available", disabled=True, options=[discord.SelectOption(label="None", value="n")]))
+                
+            self.orchestrator.add_item(NextStepButton(self.setup, self.orchestrator, next_step=3, label="Next: Populate Trainees ➔", style=discord.ButtonStyle.success))
+            
+        conn.close()
+        self.orchestrator.add_item(MasterExportButton())
+        
+        boss_clean = "QTP" if self.setup["boss"] == "Qadim the Peerless" else self.setup["boss"]
+        embed = discord.Embed(
+            title=f"📋 Squad Builder Checklist ({self.setup.get('squad_instance_label', 'Squad 1')})",
+            description=f"**Target Boss Run:** {boss_clean}\n**Date:** {self.setup['day']}\n\n"
+                        f"{'✅' if self.step > 1 else '👉'} **Step 1: Select Commander(s)**\n"
+                        f"└ *Assigned:* {', '.join(self.setup['commanders']) if self.setup['commanders'] else '*None selected yet*'}\n\n"
+                        f"{'👉' if self.step == 2 else '⏳'} **Step 2: Select Aide(s)**\n"
+                        f"└ *Assigned:* {', '.join(self.setup['aides']) if self.setup['aides'] else '*None selected yet*'}\n\n"
+                        f"⏳ **Step 3: Randomly Populate Trainee Roster Lineups**",
+            color=discord.Color.blue()
+        )
+        await interaction.response.edit_message(embed=embed, view=self.orchestrator)
 
 class NextStepButton(discord.ui.Button):
-    def __init__(self, setup, orchestrator, next_step, label, style=discord.ButtonStyle.secondary):
+    def __init__(self, setup, orchestrator, next_step, label, style=discord.ButtonStyle.primary):
+        super().__init__(label=label, style=style)
         self.setup = setup
         self.orchestrator = orchestrator
         self.next_step = next_step
-        super().__init__(label=label, style=style)
 
     async def callback(self, interaction: discord.Interaction):
-        if self.next_step == 3:
+        if self.next_step == 2:
+            self.orchestrator.clear_items()
+            conn = sqlite3.connect('raids.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM leaders WHERE rank = 'Aide'")
+            all_aides = [row[0] for row in cursor.fetchall()]
+            avail = [a for a in all_aides if a.lower() not in self.orchestrator.assigned_leads]
+            conn.close()
+            
+            if avail:
+                self.orchestrator.add_item(ChecklistStaffSelect(self.setup, self.orchestrator, avail, current_step=2))
+            else:
+                self.orchestrator.add_item(discord.ui.Select(
+                    placeholder="❌ No unique Aides available", disabled=True,
+                    options=[discord.SelectOption(label="None available", value="none")]
+                ))
+                
+            self.orchestrator.add_item(NextStepButton(self.setup, self.orchestrator, next_step=3, label="Next: Populate Trainees ➔", style=discord.ButtonStyle.success))
+            self.orchestrator.add_item(MasterExportButton())
+            
+            boss_clean = "QTP" if self.setup["boss"] == "Qadim the Peerless" else self.setup["boss"]
+            embed = discord.Embed(
+                title=f"📋 Squad Builder Checklist ({self.setup.get('squad_instance_label', 'Squad 1')})",
+                description=f"**Target Boss Run:** {boss_clean}\n**Date:** {self.setup['day']}\n\n"
+                            f"✅ **Step 1: Select Commander(s)**\n"
+                            f"└ *Assigned:* {', '.join(self.setup['commanders'])}\n\n"
+                            f"👉 **Step 2: Select Aide(s)**\n"
+                            f"└ *Assigned:* *None selected yet*\n\n"
+                            f"⏳ **Step 3: Randomly Populate Trainee Roster Lineups**",
+                color=discord.Color.blue()
+            )
+            await interaction.response.edit_message(embed=embed, view=self.orchestrator)
+            
+        elif self.next_step == 3:
+            await interaction.response.defer(ephemeral=True)
             await generate_final_checklist_squad(interaction, self.setup, self.orchestrator)
-        else:
-            await send_checklist_step(interaction, self.setup, self.orchestrator, step=self.next_step)
-
 
 class MasterExportButton(discord.ui.Button):
-    """🌟 NEW: The button that compiles all cached squads into one file."""
     def __init__(self):
-        super().__init__(label="🔴 Finish & Export Master CSV", style=discord.ButtonStyle.danger, row=1)
+        super().__init__(label="🔴 Finish & Export Master CSV", style=discord.ButtonStyle.danger, row=4)
 
     async def callback(self, interaction: discord.Interaction):
-        if not self.view.master_csv_rows:
-            return await interaction.response.send_message("❌ You haven't generated any squads to export yet!", ephemeral=True)
-            
         await interaction.response.defer(ephemeral=True)
-        
+        if not self.view.master_csv_rows:
+            await interaction.followup.send("⚠️ Master output cache is completely empty! Build at least one squad target first.", ephemeral=True)
+            return
+
         output = io.StringIO()
         writer = csv.writer(output)
-        
-        # Write Header row once at the very top of the single file
-        writer.writerow(["Player name", "Discord name", "Discord Ping", "Day", "Squad", "Squad Type", "Assigned Role", "Tier", "Signups", "Roles"])
-        # Dump all compiled squad records down the list
+        writer.writerow(["Account Name / ID", "Character Name", "Discord Tag / Ping", "Date", "Squad Number", "Boss", "Assigned Role", "Group Tier", "Eligible Bosses", "Roles Selection Profile"])
         writer.writerows(self.view.master_csv_rows)
-        
         output.seek(0)
-        file_data = discord.File(fp=io.BytesIO(output.getvalue().encode()), filename=f"master_squads_{self.view.day}.csv")
         
-        await interaction.followup.send(content=f"🚀 **All Squads Compiled Successfully!** Attached is your master sheet format file:", file=file_data, ephemeral=True)
+        discord_file = discord.File(io.BytesIO(output.getvalue().encode('utf-8')), filename=f"master-squads-{self.view.day}.csv")
+        await interaction.followup.send("📊 Here is your compiled, multi-boss optimized master training roster document:", file=discord_file, ephemeral=True)
 
-
+# --- MATRICES COMBINATORIAL ALGORITHM ---
 async def generate_final_checklist_squad(interaction: discord.Interaction, setup: dict, orchestrator):
-    """Processes Step 3, handles priority algorithms, and bundles the data rows into the Master Cache."""
-    await interaction.response.defer(ephemeral=True)
-    
-    conn = sqlite3.connect('raids.db')
+    db_path = 'raids.db'
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    leader_pool = []
-    all_leads = setup["commanders"] + setup["aides"]
+    boss_name = setup["boss"]
     
+    cursor.execute("SELECT username, discord_ping, gw2_acc, roles FROM signups WHERE signup_date = ? AND training_name = ?", (setup["day"], boss_name))
+    trainees_raw = cursor.fetchall()
+    
+    lower_leads = set(x.lower() for x in setup["commanders"] + setup["aides"])
+    leader_pool = []
     for name in setup["commanders"]:
         cursor.execute("SELECT roles FROM leaders WHERE username = ?", (name,))
         res = cursor.fetchone()
         roles = [r.strip().lower() for r in res[0].split(',') if r.strip()] if res else ["dps"]
-        leader_pool.append({"name": name, "roles": roles, "type": "Commander", "assigned_role": "Commander"})
-        
+        leader_pool.append({"name": name, "roles": roles, "type": "Commander", "assigned_role": "DPS"})
     for name in setup["aides"]:
         cursor.execute("SELECT roles FROM leaders WHERE username = ?", (name,))
         res = cursor.fetchone()
         roles = [r.strip().lower() for r in res[0].split(',') if r.strip()] if res else ["dps"]
-        leader_pool.append({"name": name, "roles": roles, "type": "Aide", "assigned_role": "Aide"})
-
-    cursor.execute("SELECT username, discord_ping, gw2_acc, roles FROM signups WHERE signup_date = ? AND training_name = ?", 
-                   (setup["day"], setup["boss"]))
-    trainees_raw = cursor.fetchall()
-    
+        leader_pool.append({"name": name, "roles": roles, "type": "Aide", "assigned_role": "DPS"})
+        
     trainee_pool = []
-    lower_leads = [n.lower() for n in all_leads]
-    placeholders = ', '.join('?' for _ in orchestrator.active_bosses)
-    
     for t_name, t_ping, t_acc, t_roles in trainees_raw:
         if t_name.lower() not in lower_leads and t_name.lower() not in orchestrator.assigned_trainees:
+            unique_boss_names = list(set(b["boss_value"] for b in orchestrator.active_bosses))
+            placeholders = ", ".join(["?"] * len(unique_boss_names))
+            
             query = f"SELECT COUNT(*) FROM signups WHERE signup_date = ? AND username = ? AND training_name IN ({placeholders})"
-            query_params = [setup["day"], t_name] + list(orchestrator.active_bosses)
+            query_params = [setup["day"], t_name] + unique_boss_names
+            
             cursor.execute(query, query_params)
             session_boss_count = cursor.fetchone()[0]
             
             parsed_roles = [r.strip().lower() for r in t_roles.split(',') if r.strip()]
-            
             if any(role in parsed_roles for role in ["qheal", "aheal", "quickheal", "alacheal"]):
                 role_weight = 0
             elif any(role in parsed_roles for role in ["qdps", "adps", "quickdps", "alacdps"]):
                 role_weight = 1
             else:
                 role_weight = 2
-            
+                
             trainee_pool.append({
                 "name": t_name, "ping": t_ping, "acc": t_acc, "roles": parsed_roles,
                 "roles_raw_str": t_roles, "boss_count": session_boss_count, "role_weight": role_weight
             })
             
-    conn.close()
-
-    import random
-    random.shuffle(trainee_pool)
     trainee_pool.sort(key=lambda x: (x["boss_count"], x["role_weight"]))
     
-    max_trainee_slots = max(0, 10 - len(leader_pool))
-    active_trainees = trainee_pool[:max_trainee_slots]
+    needed_trainees = 10 - len(leader_pool)
+    active_trainees = trainee_pool[:needed_trainees]
     
+    subgroup_boons = []
+    assigned_names = set()
+    
+    boon_targets = [
+        {"type": "qheal", "roles": ["qheal", "quickheal"]},
+        {"type": "aheal", "roles": ["aheal", "alacheal"]},
+        {"type": "qdps", "roles": ["qdps", "quickdps"]},
+        {"type": "adps", "roles": ["adps", "alacdps"]}
+    ]
+    
+    import random
+    random.shuffle(boon_targets)
+    
+    for target in boon_targets:
+        found = False
+        for trainee in active_trainees:
+            if trainee["name"] not in assigned_names and any(r in trainee["roles"] for r in target["roles"]):
+                trainee["assigned_role"] = "Heal Quickness" if target["type"] == "qheal" else "Heal Alacrity" if target["type"] == "aheal" else "DPS Quickness" if target["type"] == "qdps" else "DPS Alacrity"
+                subgroup_boons.append(target["type"])
+                assigned_names.add(trainee["name"])
+                found = True
+                break
+        if not found:
+            for leader in leader_pool:
+                if leader["name"] not in assigned_names and any(r in leader["roles"] for r in target["roles"]):
+                    leader["assigned_role"] = "Heal Quickness" if target["type"] == "qheal" else "Heal Alacrity" if target["type"] == "aheal" else "DPS Quickness" if target["type"] == "qdps" else "DPS Alacrity"
+                    subgroup_boons.append(target["type"])
+                    assigned_names.add(leader["name"])
+                    break
+                    
     for trainee in active_trainees:
+        if trainee["name"] not in assigned_names:
+            trainee["assigned_role"] = "DPS"
         orchestrator.assigned_trainees.add(trainee["name"].lower())
         
-    # 4. Dual-Subgroup Boon Solver Matrix
-    squad_processing_pool = leader_pool + active_trainees
-    assigned_names = set()
-    subgroup_boons = [] # Stores our successful matches [ (player, role, sub_num), ... ]
-
-    def find_boon_pair(pool, exclude_names):
-        """Helper to find a single valid complementary boon pair within an available pool."""
-        # Refresh available candidates for this specific pass
-        avail = [p for p in pool if p["name"] not in exclude_names]
-        
-        q_heals = [p for p in avail if any(r in p["roles"] for r in ["qheal", "quickheal"])]
-        a_heals = [p for p in avail if any(r in p["roles"] for r in ["aheal", "alacheal"])]
-        q_dps   = [p for p in avail if any(r in p["roles"] for r in ["qdps", "quickdps"])]
-        a_dps   = [p for p in avail if any(r in p["roles"] for r in ["adps", "alacdps"])]
-        
-        # Strategy A: Quick-Heal + Alac-DPS
-        for qh in q_heals:
-            for ad in a_dps:
-                if qh["name"] != ad["name"]:
-                    return (qh, "Heal Quickness"), (ad, "DPS Alacrity")
-                    
-        # Strategy B: Fallback Alac-Heal + Quick-DPS
-        for ah in a_heals:
-            for qd in q_dps:
-                if ah["name"] != qd["name"]:
-                    return (ah, "Heal Alacrity"), (qd, "DPS Quickness")
-                    
-        return None
-
-    # --- Match Subgroup 1 ---
-    match_sub1 = find_boon_pair(squad_processing_pool, assigned_names)
-    if match_sub1:
-        b1, b2 = match_sub1
-        b1[0]["assigned_role"] = b1[1]
-        b2[0]["assigned_role"] = b2[1]
-        assigned_names.update([b1[0]["name"], b2[0]["name"]])
-        subgroup_boons.extend([(b1[0]["name"], b1[1]), (b2[0]["name"], b2[1])])
-
-    # --- Match Subgroup 2 ---
-    # It passes the 'assigned_names' block, ensuring Subgroup 1 players can't be picked twice!
-    match_sub2 = find_boon_pair(squad_processing_pool, assigned_names)
-    if match_sub2:
-        b3, b4 = match_sub2
-        b3[0]["assigned_role"] = b3[1]
-        b4[0]["assigned_role"] = b4[1]
-        assigned_names.update([b3[0]["name"], b4[0]["name"]])
-        subgroup_boons.extend([(b3[0]["name"], b3[1]), (b4[0]["name"], b4[1])])
-
-    # 5. Build CSV Match Output 
-    # 5. Build CSV Match Output 
-    boss_label = "QTP" if setup["boss"] == "Qadim the Peerless" else setup["boss"]
+    for leader in leader_pool:
+        if leader["name"] not in assigned_names:
+            leader["assigned_role"] = "DPS"
+            
+    # 🌟 NEW TRACKING QUERY: Calculate total unique signups on this date remaining
+    cursor.execute("SELECT COUNT(DISTINCT username) FROM signups WHERE signup_date = ?", (setup["day"],))
+    total_unique_trainees = cursor.fetchone()[0]
+    remaining_trainees_count = max(0, total_unique_trainees - len(orchestrator.assigned_trainees))
     
-    # 🌟 THE UPDATE: Standardize the date field format to YYYY-MM-DD
+    conn.close()
+    
+    if "cohort_key" in setup:
+        orchestrator.completed_cohorts.add(setup["cohort_key"])
+
+    orchestrator.clear_items()
+    orchestrator.add_item(BossSquadSelector(orchestrator.active_bosses, orchestrator_view=orchestrator))
+    orchestrator.add_item(MasterExportButton())
+    
+    base_label = "QTP" if setup["boss"] == "Qadim the Peerless" else setup["boss"]
+    boss_label = f"{base_label} {setup.get('squad_instance_label', 'Squad 1')}"
+    
     from datetime import datetime
     try:
-        # Tries to parse standard variations. Add formats if your staff inputs differ!
         for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y"):
             try:
                 clean_date = datetime.strptime(setup["day"].strip(), fmt).strftime("%Y-%m-%d")
@@ -487,44 +522,44 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
             except ValueError:
                 continue
         else:
-            # Fallback to raw string if it completely fails to parse an expected format
             clean_date = setup["day"]
     except Exception:
         clean_date = setup["day"]
 
-    # Process Staff Output Rows
     for leader in leader_pool:
         if leader["name"] in assigned_names:
             final_role = leader.get("assigned_role")
         else:
             final_role = "DPS"
-
         orchestrator.master_csv_rows.append([
             leader["name"], leader["name"], f"@{leader['name']}", 
             clean_date, setup["squad_number"], boss_label, final_role, "-", "all", "all"
-            # 🚀 ^ clean_date replaces setup["day"]
         ])
         
-    # Process Trainee Output Rows
     for trainee in active_trainees:
         final_role = trainee.get("assigned_role", "DPS")
         orchestrator.master_csv_rows.append([
             trainee["acc"] if trainee["acc"] else trainee["name"], trainee["name"], trainee["ping"], 
             clean_date, setup["squad_number"], boss_label, final_role, "3", boss_label, trainee["roles_raw_str"]
-            # 🚀 ^ clean_date replaces setup["day"]
         ])
-
-    # Dynamic status warning block to display in Discord chat
+        
     warning_text = ""
-    found_boons_count = len(subgroup_boons) // 2 # Should be 2 full pairs
+    found_boons_count = len(subgroup_boons) // 2
     if found_boons_count < 2:
         warning_text = f"\n⚠️ *Notice: Group composition is short on support profiles! Found {found_boons_count}/2 structural boon pairs.*"
 
-    await interaction.edit_original_response(
-        content=f"✅ **Squad #{setup['squad_number']} ({boss_label}) compiled and cached!**{warning_text}\n"
-                f"Select another target boss from the dashboard menu above to keep building, or click the red export button below to grab your master file.",
-        embed=None, view=None
+    return_embed = discord.Embed(
+        title="📊 Raid Night Master Dashboard",
+        description=f"✅ **{boss_label} compiled and cached successfully!**{warning_text}\n\n"
+                    f"**Date Context:** `{setup['day']}`\n"
+                    f"**Remaining Unassigned Trainees:** `{remaining_trainees_count}`\n"
+                    f"**Current master file lines:** {len(orchestrator.master_csv_rows)} tracking rows cached.\n\n"
+                    "Select your next target training cohort block below to continue building, or click the red export button to finish.",
+        color=discord.Color.dark_purple()
     )
+    return_embed.set_footer(text="Xroads Raid Orchestration Engine")
+    
+    await interaction.edit_original_response(embed=return_embed, view=orchestrator)
 
 # pools = {
 #             "Beginner": [
