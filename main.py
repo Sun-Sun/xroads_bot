@@ -8,6 +8,7 @@ import sqlite3
 from dotenv import load_dotenv
 from database import setup_db, save_signup, delete_signup, create_embed, update_raid_embed, wipe_date
 from datetime import datetime, timedelta
+import pytz
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')

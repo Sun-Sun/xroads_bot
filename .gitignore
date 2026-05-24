@@ -3,3 +3,4 @@ raids.db
 *.db-journal
 __pycache__/
 .venv/
+inject_trainees.py

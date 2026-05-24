@@ -196,6 +196,7 @@ class SquadOrchestratorView(discord.ui.View):
         self.assigned_leads = set()      # Tracks used staff
         self.assigned_trainees = set()   # Tracks used trainees
         self.master_csv_rows = []        # 🌟 NEW: Holds all squad data rows until the end
+        self.active_bosses = active_bosses
         
         # Base Selection Dropdown
         self.add_item(BossSquadSelector(active_bosses))
@@ -212,11 +213,19 @@ class BossSquadSelector(discord.ui.Select):
         await interaction.response.defer(ephemeral=True)
         selected_boss = self.values[0]
         
-        self.view.squad_count += 1
+        # 🌟 THE FIX: Calculate the true squad number dynamically 
+        # based on how many unique squads are already stored in your running cache list!
+        if len(self.view.master_csv_rows) == 0:
+            current_squad_num = 1
+        else:
+            # Look at the 'Squad Number' column (index 4) of the last row added to the master list
+            last_recorded_squad = self.view.master_csv_rows[-1][4]
+            current_squad_num = last_recorded_squad + 1
+        
         squad_setup = {
             "boss": selected_boss,
             "day": self.view.day,
-            "squad_number": self.view.squad_count,
+            "squad_number": current_squad_num,  # 🚀 Flawless sequential progression (1, 2, 3...)
             "commanders": [],
             "aides": []
         }
@@ -246,7 +255,18 @@ async def send_checklist_step(interaction: discord.Interaction, squad_setup: dic
         cursor.execute("SELECT username FROM leaders WHERE rank = 'Commander'")
         all_comms = [row[0] for row in cursor.fetchall()]
         avail = [c for c in all_comms if c.lower() not in orchestrator.assigned_leads]
-        view.add_item(ChecklistStaffSelect(squad_setup, orchestrator, avail if avail else all_comms[:25], current_step=1))
+        
+        if avail:
+            view.add_item(ChecklistStaffSelect(squad_setup, orchestrator, avail, current_step=1))
+        else:
+            # 🌟 FIX: Provide a dummy option so Discord's form validation clears cleanly
+            disabled_select = discord.ui.Select(
+                placeholder="❌ No unique Commanders available", 
+                disabled=True,
+                options=[discord.SelectOption(label="None available", value="none")]
+            )
+            view.add_item(disabled_select)
+            
         if squad_setup["commanders"]:
             view.add_item(NextStepButton(squad_setup, orchestrator, next_step=2, label="Next: Select Aides ➔"))
             
@@ -254,7 +274,18 @@ async def send_checklist_step(interaction: discord.Interaction, squad_setup: dic
         cursor.execute("SELECT username FROM leaders WHERE rank = 'Aide'")
         all_aides = [row[0] for row in cursor.fetchall()]
         avail = [a for a in all_aides if a.lower() not in orchestrator.assigned_leads]
-        view.add_item(ChecklistStaffSelect(squad_setup, orchestrator, avail if avail else all_aides[:25], current_step=2))
+        
+        if avail:
+            view.add_item(ChecklistStaffSelect(squad_setup, orchestrator, avail, current_step=2))
+        else:
+            # 🌟 FIX: Provide a dummy option here as well
+            disabled_select = discord.ui.Select(
+                placeholder="❌ No unique Aides available", 
+                disabled=True,
+                options=[discord.SelectOption(label="None available", value="none")]
+            )
+            view.add_item(disabled_select)
+            
         view.add_item(NextStepButton(squad_setup, orchestrator, next_step=3, label="Next: Populate Trainees ➔", style=discord.ButtonStyle.success))
         
     conn.close()
@@ -276,12 +307,17 @@ class ChecklistStaffSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         chosen_name = self.values[0]
-        self.orchestrator.assigned_leads.add(chosen_name.lower())
         
         if self.step == 1:
-            self.setup["commanders"].append(chosen_name)
+            if chosen_name not in self.setup["commanders"]:
+                self.setup["commanders"].append(chosen_name)
+                # Lock them globally to the entire orchestration session view container
+                self.orchestrator.assigned_leads.add(chosen_name.lower())
         else:
-            self.setup["aides"].append(chosen_name)
+            if chosen_name not in self.setup["aides"]:
+                self.setup["aides"].append(chosen_name)
+                # Lock them globally to the entire orchestration session view container
+                self.orchestrator.assigned_leads.add(chosen_name.lower())
             
         await send_checklist_step(interaction, self.setup, self.orchestrator, step=self.step)
 
@@ -339,13 +375,13 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
         cursor.execute("SELECT roles FROM leaders WHERE username = ?", (name,))
         res = cursor.fetchone()
         roles = [r.strip().lower() for r in res[0].split(',') if r.strip()] if res else ["dps"]
-        leader_pool.append({"name": name, "roles": roles, "type": "Commander", "assigned_role": "Flex Support Lead"})
+        leader_pool.append({"name": name, "roles": roles, "type": "Commander", "assigned_role": "Commander"})
         
     for name in setup["aides"]:
         cursor.execute("SELECT roles FROM leaders WHERE username = ?", (name,))
         res = cursor.fetchone()
         roles = [r.strip().lower() for r in res[0].split(',') if r.strip()] if res else ["dps"]
-        leader_pool.append({"name": name, "roles": roles, "type": "Aide", "assigned_role": "Flex Support Lead"})
+        leader_pool.append({"name": name, "roles": roles, "type": "Aide", "assigned_role": "Aide"})
 
     cursor.execute("SELECT username, discord_ping, gw2_acc, roles FROM signups WHERE signup_date = ? AND training_name = ?", 
                    (setup["day"], setup["boss"]))
@@ -388,60 +424,104 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
     for trainee in active_trainees:
         orchestrator.assigned_trainees.add(trainee["name"].lower())
         
+    # 4. Dual-Subgroup Boon Solver Matrix
     squad_processing_pool = leader_pool + active_trainees
-    q_heals = [p for p in squad_processing_pool if any(r in p["roles"] for r in ["qheal", "quickheal"])]
-    a_heals = [p for p in squad_processing_pool if any(r in p["roles"] for r in ["aheal", "alacheal"])]
-    q_dps   = [p for p in squad_processing_pool if any(r in p["roles"] for r in ["qdps", "quickdps"])]
-    a_dps   = [p for p in squad_processing_pool if any(r in p["roles"] for r in ["adps", "alacdps"])]
-    
-    boon_match = False
-    b1, b2 = None, None
-    
-    for qh in q_heals:
-        for ad in a_dps:
-            if qh["name"] != ad["name"]:
-                b1, b2 = (qh, "Heal Quickness"), (ad, "DPS Alacrity")
-                boon_match = True
-                break
-        if boon_match: break
+    assigned_names = set()
+    subgroup_boons = [] # Stores our successful matches [ (player, role, sub_num), ... ]
+
+    def find_boon_pair(pool, exclude_names):
+        """Helper to find a single valid complementary boon pair within an available pool."""
+        # Refresh available candidates for this specific pass
+        avail = [p for p in pool if p["name"] not in exclude_names]
         
-    if not boon_match:
+        q_heals = [p for p in avail if any(r in p["roles"] for r in ["qheal", "quickheal"])]
+        a_heals = [p for p in avail if any(r in p["roles"] for r in ["aheal", "alacheal"])]
+        q_dps   = [p for p in avail if any(r in p["roles"] for r in ["qdps", "quickdps"])]
+        a_dps   = [p for p in avail if any(r in p["roles"] for r in ["adps", "alacdps"])]
+        
+        # Strategy A: Quick-Heal + Alac-DPS
+        for qh in q_heals:
+            for ad in a_dps:
+                if qh["name"] != ad["name"]:
+                    return (qh, "Heal Quickness"), (ad, "DPS Alacrity")
+                    
+        # Strategy B: Fallback Alac-Heal + Quick-DPS
         for ah in a_heals:
             for qd in q_dps:
                 if ah["name"] != qd["name"]:
-                    b1, b2 = (ah, "Heal Alacrity"), (qd, "DPS Quickness")
-                    boon_match = True
-                    break
-            if boon_match: break
+                    return (ah, "Heal Alacrity"), (qd, "DPS Quickness")
+                    
+        return None
 
-    assigned_names = set()
-    if boon_match:
+    # --- Match Subgroup 1 ---
+    match_sub1 = find_boon_pair(squad_processing_pool, assigned_names)
+    if match_sub1:
+        b1, b2 = match_sub1
         b1[0]["assigned_role"] = b1[1]
         b2[0]["assigned_role"] = b2[1]
         assigned_names.update([b1[0]["name"], b2[0]["name"]])
+        subgroup_boons.extend([(b1[0]["name"], b1[1]), (b2[0]["name"], b2[1])])
 
-    # 🌟 DATA REDIRECTION: Instead of writing a file right now, cache the clean row arrays
+    # --- Match Subgroup 2 ---
+    # It passes the 'assigned_names' block, ensuring Subgroup 1 players can't be picked twice!
+    match_sub2 = find_boon_pair(squad_processing_pool, assigned_names)
+    if match_sub2:
+        b3, b4 = match_sub2
+        b3[0]["assigned_role"] = b3[1]
+        b4[0]["assigned_role"] = b4[1]
+        assigned_names.update([b3[0]["name"], b4[0]["name"]])
+        subgroup_boons.extend([(b3[0]["name"], b3[1]), (b4[0]["name"], b4[1])])
+
+    # 5. Build CSV Match Output 
+    # 5. Build CSV Match Output 
     boss_label = "QTP" if setup["boss"] == "Qadim the Peerless" else setup["boss"]
     
-    # Cache Staff Rows
+    # 🌟 THE UPDATE: Standardize the date field format to YYYY-MM-DD
+    from datetime import datetime
+    try:
+        # Tries to parse standard variations. Add formats if your staff inputs differ!
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y"):
+            try:
+                clean_date = datetime.strptime(setup["day"].strip(), fmt).strftime("%Y-%m-%d")
+                break
+            except ValueError:
+                continue
+        else:
+            # Fallback to raw string if it completely fails to parse an expected format
+            clean_date = setup["day"]
+    except Exception:
+        clean_date = setup["day"]
+
+    # Process Staff Output Rows
     for leader in leader_pool:
-        final_role = leader.get("assigned_role") if leader["name"] in assigned_names else "DPS"
+        if leader["name"] in assigned_names:
+            final_role = leader.get("assigned_role")
+        else:
+            final_role = "DPS"
+
         orchestrator.master_csv_rows.append([
             leader["name"], leader["name"], f"@{leader['name']}", 
-            setup["day"], setup["squad_number"], boss_label, final_role, "-", "all", "all"
+            clean_date, setup["squad_number"], boss_label, final_role, "-", "all", "all"
+            # 🚀 ^ clean_date replaces setup["day"]
         ])
         
-    # Cache Trainee Rows
+    # Process Trainee Output Rows
     for trainee in active_trainees:
-        final_role = trainee.get("assigned_role") if trainee["name"] in assigned_names else "DPS"
+        final_role = trainee.get("assigned_role", "DPS")
         orchestrator.master_csv_rows.append([
             trainee["acc"] if trainee["acc"] else trainee["name"], trainee["name"], trainee["ping"], 
-            setup["day"], setup["squad_number"], boss_label, final_role, "3", boss_label, trainee["roles_raw_str"]
+            clean_date, setup["squad_number"], boss_label, final_role, "3", boss_label, trainee["roles_raw_str"]
+            # 🚀 ^ clean_date replaces setup["day"]
         ])
 
-    # Let the squadmaker know this sub-squad step cleared cleanly
+    # Dynamic status warning block to display in Discord chat
+    warning_text = ""
+    found_boons_count = len(subgroup_boons) // 2 # Should be 2 full pairs
+    if found_boons_count < 2:
+        warning_text = f"\n⚠️ *Notice: Group composition is short on support profiles! Found {found_boons_count}/2 structural boon pairs.*"
+
     await interaction.edit_original_response(
-        content=f"✅ **Squad #{setup['squad_number']} ({boss_label}) compiled and cached!**\n"
+        content=f"✅ **Squad #{setup['squad_number']} ({boss_label}) compiled and cached!**{warning_text}\n"
                 f"Select another target boss from the dashboard menu above to keep building, or click the red export button below to grab your master file.",
         embed=None, view=None
     )
