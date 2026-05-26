@@ -493,7 +493,7 @@ async def build_squads(interaction: discord.Interaction, day: str = None):
     conn.close()
 
     if not rows:
-        await interaction.response.send_message(f"❌ No training signups found for {day}.", ephemeral=True)
+        await interaction.followup.send(f"❌ No training signups found for {day}.", ephemeral=True)        
         return
 
     # 🌟 THE AUTO-DETECT MULTIPLIER MATRIX
