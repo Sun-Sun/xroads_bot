@@ -454,8 +454,9 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
             
     trainee_pool.sort(key=lambda x: (x["boss_count"], x["role_weight"]))
     
+    # 🌟 SAFE EDGE-CASE CAP: Draft the minimum between remaining pool capacity and space open
     needed_trainees = 10 - len(leader_pool)
-    active_trainees = trainee_pool[:needed_trainees]
+    active_trainees = trainee_pool[:min(len(trainee_pool), needed_trainees)]
     
     subgroup_boons = []
     assigned_names = set()
@@ -496,7 +497,6 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
         if leader["name"] not in assigned_names:
             leader["assigned_role"] = "DPS"
             
-    # 🌟 NEW TRACKING QUERY: Calculate total unique signups on this date remaining
     cursor.execute("SELECT COUNT(DISTINCT username) FROM signups WHERE signup_date = ?", (setup["day"],))
     total_unique_trainees = cursor.fetchone()[0]
     remaining_trainees_count = max(0, total_unique_trainees - len(orchestrator.assigned_trainees))
@@ -550,7 +550,8 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
 
     return_embed = discord.Embed(
         title="📊 Raid Night Master Dashboard",
-        description=f"✅ **{boss_label} compiled and cached successfully!**{warning_text}\n\n"
+        description=f"✅ **{boss_label} compiled and cached successfully!**\n"
+                    f"⚠️ *Note: This squad was parsed as a partial run due to roster limits ({len(leader_pool) + len(active_trainees)}/10 slots filled).* \n\n"
                     f"**Date Context:** `{setup['day']}`\n"
                     f"**Remaining Unassigned Trainees:** `{remaining_trainees_count}`\n"
                     f"**Current master file lines:** {len(orchestrator.master_csv_rows)} tracking rows cached.\n\n"
