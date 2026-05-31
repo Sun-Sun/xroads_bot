@@ -412,55 +412,61 @@ async def training_summary(interaction: discord.Interaction, day: str = None):
 
 @bot.tree.command(name="sync_leaders", description="Upload and synchronize your Commander or Aide CSV file")
 @discord.app_commands.describe(file="Drag and drop your roster CSV file here")
-@discord.app_commands.checks.has_permissions(administrator=True) # Protect the roster from normal users
+@discord.app_commands.checks.has_permissions(administrator=True)
 async def sync_leaders(interaction: discord.Interaction, file: discord.Attachment):
-    # Ensure it's a CSV file
     if not file.filename.endswith('.csv'):
         return await interaction.response.send_message("❌ Error: Please upload a valid `.csv` file.", ephemeral=True)
     
     await interaction.response.defer(ephemeral=True)
     
     try:
-        # Read the file content directly from Discord's attachments server
+        # Read file bytes asynchronously
         file_bytes = await file.read()
-        csv_text = file_bytes.decode('utf-8-sig') # handling potential byte-order-marks gracefully
         
-        import csv
-        import io
-        from database import save_leader_profile
-        
-        stream = io.StringIO(csv_text)
-        reader = csv.DictReader(stream)
-        
-        # Smart Header detection based on your sheets
-        is_aides_sheet = 'Aides' in reader.fieldnames
-        detected_rank = "Aide" if is_aides_sheet else "Commander"
-        
-        sync_count = 0
-        for row in reader:
-            # Skip empty formatting or meta-description padding rows
-            roles_raw = row.get('roles')
-            if not roles_raw or str(roles_raw).strip().lower() in ['nan', '']:
-                continue
+        # 🌟 Define a synchronous helper worker to offload processing
+        def process_csv_worker(data_bytes):
+            import csv
+            import io
+            
+            csv_text = data_bytes.decode('utf-8-sig')
+            stream = io.StringIO(csv_text)
+            reader = csv.DictReader(stream)
+            
+            is_aides_sheet = 'Aides' in reader.fieldnames if reader.fieldnames else False
+            detected_rank = "Aide" if is_aides_sheet else "Commander"
+            
+            batch_data = []
+            for row in reader:
+                roles_raw = row.get('roles')
+                if not roles_raw or str(roles_raw).strip().lower() in ['nan', '']:
+                    continue
+                    
+                if is_aides_sheet:
+                    name_raw = row.get('Aides') or row.get('Official name')
+                else:
+                    name_raw = row.get('Official name') or row.get('Unnamed: 2')
+                    
+                if name_raw and str(name_raw).strip().lower() not in ['nan', '']:
+                    clean_name = str(name_raw).strip()
+                    clean_roles = str(roles_raw).strip().lower()
+                    
+                    # Collate values into our list instead of executing queries immediately
+                    batch_data.append((clean_name, detected_rank, clean_roles))
+            
+            if batch_data:
+                from database import save_leader_profiles_batch
+                save_leader_profiles_batch(batch_data)
                 
-            # Pick correct name column based on the specific sheet layout
-            if is_aides_sheet:
-                name_raw = row.get('Aides') or row.get('Official name')
-            else:
-                name_raw = row.get('Official name') or row.get('Unnamed: 2')
-                
-            if name_raw and str(name_raw).strip().lower() not in ['nan', '']:
-                clean_name = str(name_raw).strip()
-                clean_roles = str(roles_raw).strip().lower()
-                
-                # Update SQLite database instance records
-                save_leader_profile(username=clean_name, rank=detected_rank, roles=clean_roles)
-                sync_count += 1
+            return len(batch_data), detected_rank
+
+        # 🚀 THE CRITICAL FIX: Run the heavy CPU/Disk parsing work inside a background worker thread
+        import asyncio
+        sync_count, detected_rank = await asyncio.to_thread(process_csv_worker, file_bytes)
                 
         await interaction.followup.send(
             f"✅ **Roster Synchronization Complete!**\n"
             f"Successfully identified layout as **{detected_rank} Sheet**.\n"
-            f"Parsed and updated `{sync_count}` leader profiles into `raids.db`.", 
+            f"Parsed and batch updated `{sync_count}` leader profiles instantly.", 
             ephemeral=True
         )
         

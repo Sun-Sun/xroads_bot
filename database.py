@@ -2,9 +2,13 @@ import sqlite3
 import discord
 from datetime import datetime, timedelta, timezone
 import pytz
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "raids.db")
 
 def setup_db():
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     # Signups table
@@ -43,7 +47,7 @@ def setup_db():
     conn.close()
 
 def save_signup(user_id, username, discord_ping, gw2_acc, training_name, roles, comment, signup_date):
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     try:
         cursor = conn.cursor()
         cursor.execute('''
@@ -58,7 +62,7 @@ def save_signup(user_id, username, discord_ping, gw2_acc, training_name, roles, 
         conn.close()  # CRITICAL: This unlocks the file so create_embed can read it
 
 def save_user_profile(user_id, gw2_acc):
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     try:
         cursor = conn.cursor()
         cursor.execute('INSERT OR REPLACE INTO user_profiles (user_id, gw2_acc) VALUES (?, ?)', (user_id, gw2_acc))
@@ -67,7 +71,7 @@ def save_user_profile(user_id, gw2_acc):
         conn.close()
 
 def get_user_profile(user_id):
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT gw2_acc FROM user_profiles WHERE user_id=?', (user_id,))
     result = cursor.fetchone()
@@ -75,7 +79,7 @@ def get_user_profile(user_id):
     return result[0] if result else None
 
 def remove_user_profile(user_id):
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     try:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM user_profiles WHERE user_id=?", (user_id,))
@@ -84,7 +88,7 @@ def remove_user_profile(user_id):
         conn.close()
 
 def delete_signup(user_id, signup_date):
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         DELETE FROM signups 
@@ -94,7 +98,7 @@ def delete_signup(user_id, signup_date):
     conn.close()
 
 def get_signup_by_date(user_id, signup_date):
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT * FROM signups 
@@ -105,7 +109,7 @@ def get_signup_by_date(user_id, signup_date):
     return results
 
 def wipe_date(signup_date):
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM signups WHERE signup_date=?", (signup_date,))
     conn.commit()
@@ -113,7 +117,7 @@ def wipe_date(signup_date):
 
 def save_leader_profile(username, rank, roles):
     """Inserts or replaces a leader's profile records."""
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT OR REPLACE INTO leaders (username, rank, roles)
@@ -121,6 +125,34 @@ def save_leader_profile(username, rank, roles):
     ''', (username, rank, roles))
     conn.commit()
     conn.close()
+
+def save_leader_profiles_batch(profiles: list):
+    """
+    Saves a list of leader profiles in a single transactional batch.
+    profiles format: [ (username, rank, roles), (username, rank, roles), ... ]
+    """
+    from database import DB_PATH
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    try:
+        # Using an UPSERT style query (or REPLACE) depending on your schema
+        cursor.executemany(
+            """
+            INSERT INTO leaders (username, rank, roles)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                rank = excluded.rank,
+                roles = excluded.roles
+            """,
+            profiles
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
 
 # ==========================================
 # == EMBED CREATION & UPDATING ==
@@ -133,7 +165,7 @@ import pytz  # Add this import
 
 def create_embed(date, title=None, raiddescription=None, embedcolor=None, startTime="20:00"):
     # 1. Database count logic
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(DISTINCT user_id) FROM signups WHERE signup_date=?", (date,))
     count = cursor.fetchone()[0]

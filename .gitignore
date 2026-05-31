@@ -4,3 +4,4 @@ raids.db
 __pycache__/
 .venv/
 inject_trainees.py
+inject_test.py
