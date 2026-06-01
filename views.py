@@ -234,15 +234,21 @@ class BossSquadSelector(discord.ui.Select):
         selected_raw = self.values[0]
         boss_name, squad_suffix = selected_raw.split("|")
         
-        if len(self.view.master_csv_rows) == 0:
+        # 🌟 CREATE A STABLE LOCAL REFERENCE POINT BEFORE CLEARING ITEMS
+        orchestrator_view = self.view
+        if orchestrator_view is None:
+            # Fallback check to keep it bulletproof
+            orchestrator_view = self
+            
+        if len(orchestrator_view.master_csv_rows) == 0:
             current_squad_num = 1
         else:
-            last_recorded_squad = self.view.master_csv_rows[-1][4]
+            last_recorded_squad = orchestrator_view.master_csv_rows[-1][4]
             current_squad_num = last_recorded_squad + 1
         
         squad_setup = {
             "boss": boss_name,
-            "day": self.view.day,
+            "day": orchestrator_view.day,
             "squad_number": current_squad_num,
             "squad_instance_label": f"Squad {squad_suffix}",
             "cohort_key": selected_raw,
@@ -250,23 +256,25 @@ class BossSquadSelector(discord.ui.Select):
             "aides": []
         }
         
-        self.view.clear_items()
+        # 🚀 Now it's perfectly safe to clear items because we use our local orchestrator_view reference below!
+        orchestrator_view.clear_items()
+        
         conn = sqlite3.connect('raids.db')
         cursor = conn.cursor()
         cursor.execute("SELECT username FROM leaders WHERE rank = 'Commander'")
         all_comms = [row[0] for row in cursor.fetchall()]
-        avail = [c for c in all_comms if c.lower() not in self.view.assigned_leads]
+        avail = [c for c in all_comms if c.lower() not in orchestrator_view.assigned_leads]
         conn.close()
         
         if avail:
-            self.view.add_item(ChecklistStaffSelect(squad_setup, self.view, avail, current_step=1))
+            orchestrator_view.add_item(ChecklistStaffSelect(squad_setup, orchestrator_view, avail, current_step=1))
         else:
-            self.view.add_item(discord.ui.Select(
+            orchestrator_view.add_item(discord.ui.Select(
                 placeholder="❌ No unique Commanders available", disabled=True,
                 options=[discord.SelectOption(label="None available", value="none")]
             ))
             
-        self.view.add_item(MasterExportButton())
+        orchestrator_view.add_item(MasterExportButton())
             
         boss_clean = "QTP" if squad_setup["boss"] == "Qadim the Peerless" else squad_setup["boss"]
         embed = discord.Embed(
@@ -276,7 +284,7 @@ class BossSquadSelector(discord.ui.Select):
                         f"⏳ **Step 2: Select Aide(s)**\n\n⏳ **Step 3: Randomly Populate Trainee Roster Lineups**",
             color=discord.Color.blue()
         )
-        await interaction.response.edit_message(embed=embed, view=self.view)
+        await interaction.response.edit_message(embed=embed, view=orchestrator_view)
 
 class ChecklistStaffSelect(discord.ui.Select):
     def __init__(self, setup, orchestrator, staff_list, current_step):
