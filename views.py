@@ -49,8 +49,9 @@ class FullSignupModal(discord.ui.Modal, title='Raid Training: New Profile'):
                 roles=roles_str
             )
 
-        await update_raid_embed(interaction, self.training_date, message=self.message)
-        await interaction.edit_original_response(content="✅ Signup Successful!", view=None)
+        # 🌟 FIXED: Aligned strictly to your core positional database file signature
+        await update_raid_embed(self.message, self.training_date)
+        await interaction.followup.send("✅ Signup processed successfully!", ephemeral=True)
 
 # --- MODAL FOR RETURNING USERS (Comment Only) ---
 class QuickSignupModal(discord.ui.Modal, title='Raid Training Signup'):
@@ -85,8 +86,9 @@ class QuickSignupModal(discord.ui.Modal, title='Raid Training Signup'):
                 roles=roles_str
             )
 
-        await update_raid_embed(interaction, self.training_date, message=self.message)
-        await interaction.edit_original_response(content="✅ Signup Successful (Profile Used)!", view=None)
+        # 🌟 FIXED: Aligned strictly to your core positional database file signature
+        await update_raid_embed(self.message, self.training_date)
+        await interaction.followup.send("✅ Signup processed cleanly using cached profile!", ephemeral=True)
 
 
 class RoleDropdown(discord.ui.Select):
@@ -129,8 +131,8 @@ class BossSelect(discord.ui.Select):
         await interaction.response.defer()
 
 class PersistentSignupView(discord.ui.View):
-    # Pass exactly the 2 arguments your button in main.py provides
-    def __init__(self, date, message):
+    # 🌟 PARAMS FIXED: Matches (is_regular, date, message) directly from main.py
+    def __init__(self, is_regular, date, message):
         super().__init__(timeout=None)
         self.date = date
         self.message = message
@@ -174,31 +176,18 @@ class PersistentSignupView(discord.ui.View):
             {"label": "Kaineng Overlook CM", "value": "Kaineng Overlook CM"}
         ]
 
-        # 🟢 Always add the Beginner selection layout
         self.beg_menu = BossSelect(self.beg_list, "🟢 Beginner Bosses...", "🟢", "Beginner")
         self.add_item(self.beg_menu)
-        
-        # Statically prepare placeholders for downstream verification checks
-        self.int_menu = None
-        self.adv_menu = None
 
-    # 🌟 FIXED: Evaluates roles on interaction submission cleanly right inside the view scope!
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        user_role_names = [role.name for role in interaction.user.roles]
-        ADVANCED_ROLES = ["Regular", "Adventurer", "Legend", "Commander", "Aide", "Innkeeper", "Bartender", "Squadmaker"]
-        is_regular = any(role in user_role_names for role in ADVANCED_ROLES)
-        
-        if not is_regular and "Rookie" in user_role_names:
-            is_regular = False
-
-        # If they are a Regular or above, lazily populate the other layout blocks seamlessly
-        if is_regular and self.int_menu is None:
+        # 🌟 LOGIC FIXED: Renders right away depending on verified role states
+        if is_regular:
             self.int_menu = BossSelect(self.int_list, "🟡 Intermediate Bosses...", "🟡", "Intermediate")
             self.adv_menu = BossSelect(self.adv_list, "🔴 Advanced Bosses...", "🔴", "Advanced")
             self.add_item(self.int_menu)
             self.add_item(self.adv_menu)
-            await interaction.message.edit(view=self)
-        return True
+        else:
+            self.int_menu = None
+            self.adv_menu = None
 
     @discord.ui.button(label="Next: Select Roles ➡️", style=discord.ButtonStyle.blurple, row=3)
     async def next_step(self, interaction: discord.Interaction, button: discord.ui.Button):
