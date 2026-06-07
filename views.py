@@ -36,8 +36,7 @@ class FullSignupModal(discord.ui.Modal, title='Raid Training: New Profile'):
         if self.save_consent.value.upper() == "YES":
             save_user_profile(str(interaction.user.id), self.gw2_account.value)
 
-        roles_str = ",".join(self.selected_roles)
-        # 🌟 THE SAFE FIX: Explicit fallback string generation for the Discord tag
+        roles_str = ", ".join(self.selected_roles)
         safe_ping = interaction.user.mention if interaction.user.mention else f"<@{interaction.user.id}>"
         
         for boss in self.bosses:
@@ -50,146 +49,189 @@ class FullSignupModal(discord.ui.Modal, title='Raid Training: New Profile'):
                 roles=roles_str
             )
 
-        await update_raid_embed(self.message, self.training_date)
-        await interaction.followup.send("✅ Signup successful! Your preferences have been registered.", ephemeral=True)
+        await update_raid_embed(interaction, self.training_date, message=self.message)
+        await interaction.edit_original_response(content="✅ Signup Successful!", view=None)
 
-# --- SIGNUP FLOW INTERACTIVE COMPONENTS ---
-class BossSelect(discord.ui.Select):
-    def __init__(self, category_name, bosses):
-        options = [discord.SelectOption(label=b["label"], value=b["value"]) for b in bosses]
-        super().__init__(
-            placeholder=f"⚔️ Select {category_name} Boss(es)...",
-            min_values=1,
-            max_values=len(bosses),
-            options=options
-        )
+# --- MODAL FOR RETURNING USERS (Comment Only) ---
+class QuickSignupModal(discord.ui.Modal, title='Raid Training Signup'):
+    comment = discord.ui.TextInput(
+        label='Comments (Optional)', 
+        style=discord.TextStyle.long, required=False,
+        placeholder="e.g. Can do special roles"
+    )
 
-    async def callback(self, interaction: discord.Interaction):
+    def __init__(self, bosses, selected_roles, training_date, message, saved_acc):
+        super().__init__(title=f"Raid Training Signup")
+        self.bosses = bosses
+        self.selected_roles = selected_roles
+        self.training_date = training_date
+        self.message = message
+        self.saved_acc = saved_acc
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from database import save_signup, update_raid_embed
         await interaction.response.defer(ephemeral=True)
 
-class RoleButton(discord.ui.Button):
-    def __init__(self, role_label, role_value, style=discord.ButtonStyle.secondary):
-        super().__init__(label=role_label, style=style)
-        self.role_value = role_value
+        roles_str = ", ".join(self.selected_roles)
+        safe_ping = interaction.user.mention if interaction.user.mention else f"<@{interaction.user.id}>"
+        
+        for boss in self.bosses:
+            save_signup(
+                username=interaction.user.name,
+                discord_ping=safe_ping,
+                gw2_acc=self.saved_acc,
+                signup_date=self.training_date,
+                training_name=boss,
+                roles=roles_str
+            )
 
-    async def callback(self, interaction: discord.Interaction):
-        if self.role_value in self.view.selected_roles:
-            self.view.selected_roles.remove(self.role_value)
-            self.style = discord.ButtonStyle.secondary
-        else:
-            self.view.selected_roles.append(self.role_value)
-            self.style = discord.ButtonStyle.primary
-        await interaction.response.edit_message(view=self.view)
+        await update_raid_embed(interaction, self.training_date, message=self.message)
+        await interaction.edit_original_response(content="✅ Signup Successful (Profile Used)!", view=None)
 
-class SubmitSignupButton(discord.ui.Button):
-    def __init__(self, training_date, message):
-        super().__init__(label="📝 Submit Response", style=discord.ButtonStyle.success, row=4)
-        self.training_date = training_date
+
+class RoleDropdown(discord.ui.Select):
+    def __init__(self, selected_bosses, date, message):
+        # 🌟 STRICT REQUIREMENT LOCKED: Exact mapped configuration values
+        options = [
+            discord.SelectOption(label="Heal Tank Quickness", value="qhealtank"),
+            discord.SelectOption(label="Heal Tank Alacrity", value="ahealtank"),
+            discord.SelectOption(label="Heal Quickness", value="qheal"),
+            discord.SelectOption(label="Heal Alacrity", value="aheal"),
+            discord.SelectOption(label="DPS Quickness", value="qdps"),
+            discord.SelectOption(label="DPS Alacrity", value="adps"),
+            discord.SelectOption(label="DPS", value="dps"),
+        ]
+        super().__init__(placeholder="Select your roles for these bosses...", min_values=1, max_values=len(options), options=options)
+        self.selected_bosses = selected_bosses
+        self.date = date
         self.message = message
 
     async def callback(self, interaction: discord.Interaction):
-        from database import save_signup, update_raid_embed
-        
-        chosen_bosses = []
-        for item in self.view.children:
-            if isinstance(item, BossSelect):
-                chosen_bosses.extend(item.values)
+        from database import get_user_profile
+        saved_acc = get_user_profile(str(interaction.user.id))
 
-        if not chosen_bosses:
-            await interaction.response.send_message("⚠️ Please select at least one target boss run!", ephemeral=True)
-            return
-        if not self.view.selected_roles:
-            await interaction.response.send_message("⚠️ Please choose at least one combat specialization role!", ephemeral=True)
-            return
-
-        profile_acc = get_user_profile(str(interaction.user.id))
-        # 🌟 THE SAFE FIX: Explicit fallback string generation for the Discord tag
-        safe_ping = interaction.user.mention if interaction.user.mention else f"<@{interaction.user.id}>"
-        
-        if profile_acc:
-            await interaction.response.defer(ephemeral=True)
-            roles_str = ",".join(self.view.selected_roles)
-            for boss in chosen_bosses:
-                save_signup(
-                    username=interaction.user.name,
-                    discord_ping=safe_ping,
-                    gw2_acc=profile_acc,
-                    signup_date=self.training_date,
-                    training_name=boss,
-                    roles=roles_str
-                )
-            await update_raid_embed(self.message, self.training_date)
-            await interaction.followup.send("✅ Signup processed cleanly using your cached account profile!", ephemeral=True)
+        if saved_acc:
+            await interaction.response.send_modal(
+                QuickSignupModal(self.selected_bosses, self.values, self.date, self.message, saved_acc)
+            )
         else:
-            modal = FullSignupModal(chosen_bosses, self.view.selected_roles, self.training_date, self.message)
-            await interaction.response.send_modal(modal)
+            await interaction.response.send_modal(
+                FullSignupModal(self.selected_bosses, self.values, self.date, self.message)
+            )
+
+class BossSelect(discord.ui.Select):
+    def __init__(self, bosses, placeholder, emoji, tier_name):
+        options = [discord.SelectOption(label=f"✨ Select All {tier_name}", value="all")]
+        for b in bosses:
+            options.append(discord.SelectOption(label=b["label"], value=b["value"], emoji=emoji, description=f"Tier: {tier_name}"))
+        super().__init__(placeholder=placeholder, min_values=0, max_values=len(options), options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
 
 class PersistentSignupView(discord.ui.View):
-    def __init__(self, training_date, message):
+    def __init__(self, is_regular, date, message):
         super().__init__(timeout=None)
-        self.selected_roles = []
+        self.date = date
+        self.message = message
         
-        boss_categories = {
-            "Introductory": [
-                {"label": "Vale Guardian (W1)", "value": "Vale Guardian"},
-                {"label": "Gorseval (W1)", "value": "Gorseval"},
-                {"label": "Cairn (W4)", "value": "Cairn"},
-                {"label": "Mursaat Overseer (W4)", "value": "MO"},
-                {"label": "Samarog (W4)", "value": "Samarog"},
-                {"label": "River of Souls (W5)", "value": "River"},
-            ],
-            "Intermediate": [
-                {"label": "Sabetha (W1)", "value": "Sabetha"},
-                {"label": "Slothasor (W2)", "value": "Slothasor"},
-                {"label": "Matthias (W2)", "value": "Matthias"},
-                {"label": "Keep Construct (W3)", "value": "KC"},
-                {"label": "Xera (W3)", "value": "Xera"},
-                {"label": "Conjured Amalgamate (W6)", "value": "CA"},
-                {"label": "Twin Largos (W6)", "value": "Largos"},
-                {"label": "Adina (W7)", "value": "Adina"},
-                {"label": "Sabir (W7)", "value": "Sabir"},
-                {"label": "Greer (W8)", "value": "Greer"},
-                {"label": "Decima (W8)", "value": "Decima"},
-                {"label": "Ura (W8)", "value": "Ura"},
-                {"label": "Kela (W9)", "value": "Kela"},
-            ],
-            "Advanced": [
-                {"label": "Deimos (W4)", "value": "Deimos"},
-                {"label": "Souless Horror (W5)", "value": "SH"},
-                {"label": "Dhuum (W5)", "value": "Dhuum"},
-                {"label": "Qadim 1 (W6)", "value": "Qadim 1"},
-                {"label": "Qadim the Peerless (W7)", "value": "Qadim the Peerless"},
-            ]
-        }
-
-        for cat_name, boss_list in boss_categories.items():
-            self.add_item(BossSelect(cat_name, boss_list))
-
-        role_options = [
-            ("Heal Quickness", "qheal"),
-            ("Heal Alacrity", "aheal"),
-            ("DPS Quickness", "qdps"),
-            ("DPS Alacrity", "adps"),
-            ("Pure DPS", "dps")
+        # 🌟 STRICT REQUIREMENT LOCKED: Exact boss profile datasets mapped directly to database strings[cite: 1].
+        self.beg_list = [
+            {"label": "Vale Guardian (W1)", "value": "Vale Guardian"},
+            {"label": "Gorseval (W1)", "value": "Gorsevaal"},
+            {"label": "Bandit Trio (W2)", "value": "Bandit Trio"},
+            {"label": "Escort (W3)", "value": "Escort"},
+            {"label": "Twisted Castle (W3)", "value": "Twisted Castle"},
+            {"label": "Cairn (W4)", "value": "Cairn"},
+            {"label": "Mursaat Overseer (W4)", "value": "Mursaat Overseer"},
+            {"label": "Samarog (W4)", "value": "Samarog"},
+            {"label": "River and Statues (W5)", "value": "River and Statues"},
+            {"label": "Aetherblade Hideout CM, Xunlai Jade Junkyard CM, Cosmic Observatory CM", "value": "Aetherblade Hideout CM, Xunlai Jade Junkyard CM, Cosmic Observatory CM"}
         ]
-        for label, val in role_options:
-            self.add_item(RoleButton(label, val))
+        
+        self.int_list = [
+            {"label": "Sabetha (W1)", "value": "Sabetha"},
+            {"label": "Slothasor (W2)", "value": "Slothasor"},
+            {"label": "Keep Construct (W3)", "value": "Keep Construct"},
+            {"label": "Xera (W3)", "value": "Xera"},
+            {"label": "Conjured Amalgamate (W6)", "value": "Conjured Amalgamate"},
+            {"label": "Twin Largos (W6)", "value": "Twin Largos"},
+            {"label": "Adina (W7)", "value": "Adina"},
+            {"label": "Sabir (W7)", "value": "Sabir"},
+            {"label": "Kela (W9)", "value": "Kela"},
+            {"label": "Old Lions Court CM", "value": "Old Lions Court CM"}
+        ]
+        
+        self.adv_list = [
+            {"label": "Matthias (W2)", "value": "Matthias"},
+            {"label": "Deimos (W4)", "value": "Deimos"},
+            {"label": "Souless Horror (W5)", "value": "Souless Horror"},
+            {"label": "Dhuum (W5)", "value": "Dhuum"},
+            {"label": "Qadim (W6)", "value": "Qadim"},
+            {"label": "Qadim the Peerless (W7)", "value": "Qadim the Peerless"},
+            {"label": "Greer (W8)", "value": "Greer"},
+            {"label": "Decima (W8)", "value": "Decima"},
+            {"label": "Ura (W8)", "value": "Ura"},
+            {"label": "Kaineng Overlook CM", "value": "Kaineng Overlook CM"}
+        ]
 
-        self.add_item(SubmitSignupButton(training_date, message))
+        self.beg_menu = BossSelect(self.beg_list, "🟢 Beginner Bosses...", "🟢", "Beginner")
+        self.add_item(self.beg_menu)
 
-# --- SQUAD ORCHESTRATION / DRAFT SYSTEM COMPONENTS ---
+        if is_regular:
+            self.int_menu = BossSelect(self.int_list, "🟡 Intermediate Bosses...", "🟡", "Intermediate")
+            self.adv_menu = BossSelect(self.adv_list, "🔴 Advanced Bosses...", "🔴", "Advanced")
+            self.add_item(self.int_menu)
+            self.add_item(self.adv_menu)
+        else:
+            self.int_menu = None
+            self.adv_menu = None
+
+    @discord.ui.button(label="Next: Select Roles ➡️", style=discord.ButtonStyle.blurple, row=3)
+    async def next_step(self, interaction: discord.Interaction, button: discord.ui.Button):
+        final_bosses = []
+        
+        def process_menu(menu, full_list):
+            if menu and menu.values:
+                if "all" in menu.values:
+                    final_bosses.extend([b["value"] for b in full_list])
+                else:
+                    final_bosses.extend(menu.values)
+
+        process_menu(self.beg_menu, self.beg_list)
+        if self.int_menu:
+            process_menu(self.int_menu, self.int_list)
+        if self.adv_menu:
+            process_menu(self.adv_menu, self.adv_list)
+
+        final_bosses = list(set(final_bosses))
+
+        if not final_bosses:
+            return await interaction.response.send_message("❌ Please select at least one boss!", ephemeral=True)
+
+        view = discord.ui.View()
+        view.add_item(RoleDropdown(final_bosses, self.date, self.message))
+        await interaction.response.edit_message(content="**Step 2: Select your Roles**", view=view)
+
+
+# ==========================================================
+# SQUAD BUILDING STEPS
+# ==========================================================
+
 class SquadOrchestratorView(discord.ui.View):
     def __init__(self, day: str, active_bosses: list):
         super().__init__(timeout=None)
         self.day = day
-        self.active_bosses = active_bosses
-        self.master_csv_rows = []
+        self.squad_count = 0
         self.assigned_leads = set()
         self.assigned_trainees = set()
+        self.master_csv_rows = []
+        self.active_bosses = active_bosses
         self.completed_cohorts = set()
-
+        
         self.add_item(BossSquadSelector(active_bosses, orchestrator_view=self))
         self.add_item(MasterExportButton())
+
 
 class BossSquadSelector(discord.ui.Select):
     def __init__(self, bosses_data: list, orchestrator_view=None):
@@ -272,6 +314,7 @@ class BossSquadSelector(discord.ui.Select):
         )
         await interaction.response.edit_message(embed=embed, view=orchestrator_view)
 
+
 class ChecklistStaffSelect(discord.ui.Select):
     def __init__(self, setup, orchestrator, staff_list, current_step):
         self.setup = setup
@@ -333,6 +376,7 @@ class ChecklistStaffSelect(discord.ui.Select):
         )
         await interaction.response.edit_message(embed=embed, view=self.orchestrator)
 
+
 class NextStepButton(discord.ui.Button):
     def __init__(self, setup, orchestrator, next_step, label, style=discord.ButtonStyle.primary):
         super().__init__(label=label, style=style)
@@ -378,6 +422,7 @@ class NextStepButton(discord.ui.Button):
             await interaction.response.defer(ephemeral=True)
             await generate_final_checklist_squad(interaction, self.setup, self.orchestrator)
 
+
 class MasterExportButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="🔴 Finish & Export Master CSV", style=discord.ButtonStyle.danger, row=4)
@@ -394,8 +439,9 @@ class MasterExportButton(discord.ui.Button):
         writer.writerows(self.view.master_csv_rows)
         output.seek(0)
         
-        discord_file = discord.File(io.BytesIO(output.getvalue().encode('utf-8')), filename=f"master-squads-{self.view.day}.csv")
-        await interaction.followup.send("📊 Here is your compiled, multi-boss optimized master training roster document:", file=discord_file, ephemeral=True)
+        discord_file = discord.File(fp=io.BytesIO(output.getvalue().encode('utf-8')), filename=f"master_squads_{self.view.day}.csv")
+        await interaction.followup.send(content=f"🚀 **All Squads Compiled Successfully!** Attached is your master sheet format file:", file=discord_file, ephemeral=True)
+
 
 # --- MATRICES COMBINATORIAL ALGORITHM ---
 async def generate_final_checklist_squad(interaction: discord.Interaction, setup: dict, orchestrator):
@@ -435,7 +481,7 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
             session_boss_count = cursor.fetchone()[0]
             
             parsed_roles = [r.strip().lower() for r in t_roles.split(',') if r.strip()]
-            if any(role in parsed_roles for role in ["qheal", "aheal", "quickheal", "alacheal"]):
+            if any(role in parsed_roles for role in ["qheal", "aheal", "quickheal", "alacheal", "qhealtank", "ahealtank"]):
                 role_weight = 0
             elif any(role in parsed_roles for role in ["qdps", "adps", "quickdps", "alacdps"]):
                 role_weight = 1
@@ -456,8 +502,8 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
     assigned_names = set()
     
     boon_targets = [
-        {"type": "qheal", "roles": ["qheal", "quickheal"]},
-        {"type": "aheal", "roles": ["aheal", "alacheal"]},
+        {"type": "qheal", "roles": ["qheal", "quickheal", "qhealtank", "quickhealtank"]},
+        {"type": "aheal", "roles": ["aheal", "alacheal", "ahealtank", "alachealtank"]},
         {"type": "qdps", "roles": ["qdps", "quickdps"]},
         {"type": "adps", "roles": ["adps", "alacdps"]}
     ]
@@ -469,7 +515,10 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
         found = False
         for trainee in active_trainees:
             if trainee["name"] not in assigned_names and any(r in trainee["roles"] for r in target["roles"]):
-                trainee["assigned_role"] = "Heal Quickness" if target["type"] == "qheal" else "Heal Alacrity" if target["type"] == "aheal" else "DPS Quickness" if target["type"] == "qdps" else "DPS Alacrity"
+                if "tank" in "".join(trainee["roles"]):
+                    trainee["assigned_role"] = "Heal Tank Quickness" if target["type"] == "qheal" else "Heal Tank Alacrity"
+                else:
+                    trainee["assigned_role"] = "Heal Quickness" if target["type"] == "qheal" else "Heal Alacrity" if target["type"] == "aheal" else "DPS Quickness" if target["type"] == "qdps" else "DPS Alacrity"
                 subgroup_boons.append(target["type"])
                 assigned_names.add(trainee["name"])
                 found = True
@@ -521,7 +570,6 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
     except Exception:
         clean_date = setup["day"]
 
-    # 🌟 TRACK UPDATE: Column 1 explicitly passes leader["type"] (Commander/Aide) instead of duplicate name string
     for leader in leader_pool:
         final_role = leader.get("assigned_role", "DPS")
         orchestrator.master_csv_rows.append([
@@ -553,38 +601,3 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
     return_embed.set_footer(text="Xroads Raid Orchestration Engine")
     
     await interaction.edit_original_response(embed=return_embed, view=orchestrator)
-
-# pools = {
-#             "Beginner": [
-#                 {"label": "Vale Guardian (W1)", "value": "VG"},
-#                 {"label": "Gorseval (W1)", "value": "Gorse"},
-#                 {"label": "Bandit Trio (W2)", "value": "Trio"},
-#                 {"label": "Escort (W3)", "value": "Escort"},
-#                 {"label": "Twisted Castle (W3)", "value": "TC"},
-#                 {"label": "Cairn (W4)", "value": "Cairn"},
-#                 {"label": "Mursaat Overseer (W4)", "value": "MO"},
-#                 {"label": "Samarog (W4)", "value": "Sama"},
-#                 {"label": "River & Statues (W5)", "value": "R&S"},
-#             ],
-#             "Intermediate": [
-#                 {"label": "Slothasor (W2)", "value": "Sloth"},
-#                 {"label": "Matthias (W2)", "value": "Matt"},
-#                 {"label": "Keep Construct (W3)", "value": "KC"},
-#                 {"label": "Xera (W3)", "value": "Xera"},
-#                 {"label": "Sabetha (W1)", "value": "Sab"},
-#                 {"label": "Conjured Amalgamate (W6)", "value": "CA"},
-#                 {"label": "Largos (W6)", "value": "Largos"},
-#                 {"label": "Adina (W7)", "value": "Adina"},
-#                 {"label": "Sabir (W7)", "value": "Sabir"},
-#                 {"label": "Greer (W8)", "value": "Greer"},
-#                 {"label": "Decima (W8)", "value": "Decima"},
-#                 {"label": "Ura (W8)", "value": "Ura"},
-#                 {"label": "Kela (W9)", "value": "Kela"},
-#             ],
-#             "Advanced": [
-#                 {"label": "Deimos (W4)", "value": "Deimos"},
-#                 {"label": "Souless Horror (W5)", "value": "SH"},
-#                 {"label": "Dhuum (W5)", "value": "Dhuum"},
-#                 {"label": "Qadim (W6)", "value": "Qadim"},
-#                 {"label": "Qadim the Peerless (W7)", "value": "QTP"},
-#             ]
