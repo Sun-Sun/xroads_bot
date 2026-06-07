@@ -130,7 +130,7 @@ class BossSelect(discord.ui.Select):
         await interaction.response.defer()
 
 class PersistentSignupView(discord.ui.View):
-    def __init__(self, is_regular, date, message):
+    def __init__(self, date, message):
         super().__init__(timeout=None)
         self.date = date
         self.message = message
