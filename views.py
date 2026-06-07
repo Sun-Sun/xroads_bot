@@ -148,11 +148,17 @@ class PersistentSignupView(discord.ui.View):
                 {"label": "Twin Largos (W6)", "value": "Largos"},
                 {"label": "Adina (W7)", "value": "Adina"},
                 {"label": "Sabir (W7)", "value": "Sabir"},
+                {"label": "Greer (W8)", "value": "Greer"},
+                {"label": "Decima (W8)", "value": "Decima"},
+                {"label": "Ura (W8)", "value": "Ura"},
+                {"label": "Kela (W9)", "value": "Kela"},
             ],
             "Advanced": [
+                {"label": "Deimos (W4)", "value": "Deimos"},
+                {"label": "Souless Horror (W5)", "value": "SH"},
+                {"label": "Dhuum (W5)", "value": "Dhuum"},
                 {"label": "Qadim 1 (W6)", "value": "Qadim 1"},
                 {"label": "Qadim the Peerless (W7)", "value": "Qadim the Peerless"},
-                {"label": "Dhuum (W5)", "value": "Dhuum"},
             ]
         }
 

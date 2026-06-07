@@ -94,8 +94,8 @@ class PersistentSignupView(discord.ui.View):
             # Default fallback for users with no setup roles yet
             is_regular = False
 
-        from views import UnifiedBossView
-        view = UnifiedBossView(is_regular, self.training_date, interaction.message)
+        from views import PersistentSignupView
+        view = PersistentSignupView(self.training_date, interaction.message)
         
         if is_regular:
             msg_text = "Check the bosses you want to train (use multiple menus if needed):"
