@@ -41,12 +41,14 @@ class FullSignupModal(discord.ui.Modal, title='Raid Training: New Profile'):
         
         for boss in self.bosses:
             save_signup(
+                user_id=str(interaction.user.id),
                 username=interaction.user.name,
                 discord_ping=safe_ping,
                 gw2_acc=self.gw2_account.value,
-                signup_date=self.training_date,
                 training_name=boss,
-                roles=roles_str
+                roles=roles_str,
+                comment=self.comment.value,
+                signup_date=self.training_date
             )
 
         # 🌟 FIXED: Aligned strictly to your core positional database file signature
