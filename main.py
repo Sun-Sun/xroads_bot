@@ -95,7 +95,7 @@ class PersistentSignupView(discord.ui.View):
             is_regular = False
 
         from views import PersistentSignupView
-        view = PersistentSignupView(self.training_date, is_regular, interaction.message)
+        view = PersistentSignupView(is_regular=is_regular, date=self.training_date, message=interaction.message)
         
         if is_regular:
             msg_text = "Check the bosses you want to train (use multiple menus if needed):"

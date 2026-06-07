@@ -51,8 +51,7 @@ class FullSignupModal(discord.ui.Modal, title='Raid Training: New Profile'):
                 signup_date=self.training_date
             )
 
-        # 🌟 FIXED: Aligned strictly to your core positional database file signature
-        await update_raid_embed(self.message, self.training_date)
+        await update_raid_embed(interaction=interaction, training_date=self.training_date, message=self.message)
         await interaction.followup.send("✅ Signup processed successfully!", ephemeral=True)
 
 # --- MODAL FOR RETURNING USERS (Comment Only) ---
@@ -80,64 +79,90 @@ class QuickSignupModal(discord.ui.Modal, title='Raid Training Signup'):
         
         for boss in self.bosses:
             save_signup(
+                user_id=str(interaction.user.id),
                 username=interaction.user.name,
                 discord_ping=safe_ping,
                 gw2_acc=self.saved_acc,
-                signup_date=self.training_date,
                 training_name=boss,
-                roles=roles_str
+                roles=roles_str,
+                comment=self.comment.value,
+                signup_date=self.training_date
             )
 
-        # 🌟 FIXED: Aligned strictly to your core positional database file signature
-        await update_raid_embed(self.message, self.training_date)
+        await update_raid_embed(interaction=interaction, training_date=self.training_date, message=self.message)
         await interaction.followup.send("✅ Signup processed cleanly using cached profile!", ephemeral=True)
 
 
-class RoleDropdown(discord.ui.Select):
-    def __init__(self, selected_bosses, date, message):
-        options = [
-            discord.SelectOption(label="Heal Tank Quickness", value="qhealtank"),
-            discord.SelectOption(label="Heal Tank Alacrity", value="ahealtank"),
-            discord.SelectOption(label="Heal Quickness", value="qheal"),
-            discord.SelectOption(label="Heal Alacrity", value="aheal"),
-            discord.SelectOption(label="DPS Quickness", value="qdps"),
-            discord.SelectOption(label="DPS Alacrity", value="adps"),
-            discord.SelectOption(label="DPS", value="dps"),
-        ]
-        super().__init__(placeholder="Select your roles for these bosses...", min_values=1, max_values=len(options), options=options)
-        self.selected_bosses = selected_bosses
-        self.date = date
+# --- INTERACTIVE FLOW COMPONENTS ---
+class RoleButton(discord.ui.Button):
+    def __init__(self, role_label, role_value, row, style=discord.ButtonStyle.secondary):
+        super().__init__(label=role_label, style=style, row=row)
+        self.role_value = role_value
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.role_value in self.view.selected_roles:
+            self.view.selected_roles.remove(self.role_value)
+            self.style = discord.ButtonStyle.secondary
+        else:
+            self.view.selected_roles.append(self.role_value)
+            self.style = discord.ButtonStyle.primary
+        await interaction.response.edit_message(view=self.view)
+
+class SubmitSignupButton(discord.ui.Button):
+    def __init__(self, training_date, message, row=4):
+        super().__init__(label="📝 Submit Response", style=discord.ButtonStyle.success, row=row)
+        self.training_date = training_date
         self.message = message
 
     async def callback(self, interaction: discord.Interaction):
         from database import get_user_profile
-        saved_acc = get_user_profile(str(interaction.user.id))
+        
+        final_bosses = []
+        for item in self.view.children:
+            if isinstance(item, BossSelect) and item.values:
+                if "all" in item.values:
+                    if "Beginner" in item.placeholder:
+                        final_bosses.extend([b["value"] for b in self.view.beg_list])
+                    elif "Intermediate" in item.placeholder:
+                        final_bosses.extend([b["value"] for b in self.view.int_list])
+                    elif "Advanced" in item.placeholder:
+                        final_bosses.extend([b["value"] for b in self.view.adv_list])
+                else:
+                    final_bosses.extend(item.values)
 
+        final_bosses = list(set(final_bosses))
+
+        if not final_bosses:
+            return await interaction.response.send_message("❌ Please select at least one boss!", ephemeral=True)
+        if not self.view.selected_roles:
+            return await interaction.response.send_message("❌ Please select at least one role button below!", ephemeral=True)
+
+        saved_acc = get_user_profile(str(interaction.user.id))
         if saved_acc:
             await interaction.response.send_modal(
-                QuickSignupModal(self.selected_bosses, self.values, self.date, self.message, saved_acc)
+                QuickSignupModal(final_bosses, self.view.selected_roles, self.training_date, self.message, saved_acc)
             )
         else:
             await interaction.response.send_modal(
-                FullSignupModal(self.selected_bosses, self.values, self.date, self.message)
+                FullSignupModal(final_bosses, self.view.selected_roles, self.training_date, self.message)
             )
 
 class BossSelect(discord.ui.Select):
-    def __init__(self, bosses, placeholder, emoji, tier_name):
+    def __init__(self, bosses, placeholder, emoji, tier_name, row):
         options = [discord.SelectOption(label=f"✨ Select All {tier_name}", value="all")]
         for b in bosses:
             options.append(discord.SelectOption(label=b["label"], value=b["value"], emoji=emoji, description=f"Tier: {tier_name}"))
-        super().__init__(placeholder=placeholder, min_values=0, max_values=len(options), options=options)
+        super().__init__(placeholder=placeholder, min_values=0, max_values=len(options), options=options, row=row)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
 class PersistentSignupView(discord.ui.View):
-    # 🌟 PARAMS FIXED: Matches (is_regular, date, message) directly from main.py
     def __init__(self, is_regular, date, message):
         super().__init__(timeout=None)
-        self.date = date
+        self.date = str(date)
         self.message = message
+        self.selected_roles = []
         
         self.beg_list = [
             {"label": "Vale Guardian (W1)", "value": "Vale Guardian"},
@@ -178,48 +203,41 @@ class PersistentSignupView(discord.ui.View):
             {"label": "Kaineng Overlook CM", "value": "Kaineng Overlook CM"}
         ]
 
-        self.beg_menu = BossSelect(self.beg_list, "🟢 Beginner Bosses...", "🟢", "Beginner")
+        # 🟢 Beginner Menu on Row 0
+        self.beg_menu = BossSelect(self.beg_list, "🟢 Beginner Bosses...", "🟢", "Beginner", row=0)
         self.add_item(self.beg_menu)
 
-        # 🌟 LOGIC FIXED: Renders right away depending on verified role states
         if is_regular:
-            self.int_menu = BossSelect(self.int_list, "🟡 Intermediate Bosses...", "🟡", "Intermediate")
-            self.adv_menu = BossSelect(self.adv_list, "🔴 Advanced Bosses...", "🔴", "Advanced")
+            # 🟡 Intermediate Menu on Row 1, 🔴 Advanced Menu on Row 2
+            self.int_menu = BossSelect(self.int_list, "🟡 Intermediate Bosses...", "🟡", "Intermediate", row=1)
+            self.adv_menu = BossSelect(self.adv_list, "🔴 Advanced Bosses...", "🔴", "Advanced", row=2)
             self.add_item(self.int_menu)
             self.add_item(self.adv_menu)
+            
+            row_top_buttons = 3
+            row_bottom_buttons = 4
         else:
             self.int_menu = None
             self.adv_menu = None
+            row_top_buttons = 1
+            row_bottom_buttons = 2
 
-    @discord.ui.button(label="Next: Select Roles ➡️", style=discord.ButtonStyle.blurple, row=3)
-    async def next_step(self, interaction: discord.Interaction, button: discord.ui.Button):
-        final_bosses = []
+        # Role Buttons Grid Distribution Layout
+        self.add_item(RoleButton("Heal Tank Quickness", "qhealtank", row=row_top_buttons))
+        self.add_item(RoleButton("Heal Tank Alacrity", "ahealtank", row=row_top_buttons))
+        self.add_item(RoleButton("Heal Quickness", "qheal", row=row_top_buttons))
+        self.add_item(RoleButton("Heal Alacrity", "aheal", row=row_top_buttons))
         
-        def process_menu(menu, full_list):
-            if menu and menu.values:
-                if "all" in menu.values:
-                    final_bosses.extend([b["value"] for b in full_list])
-                else:
-                    final_bosses.extend(menu.values)
+        self.add_item(RoleButton("DPS Quickness", "qdps", row=row_bottom_buttons))
+        self.add_item(RoleButton("DPS Alacrity", "adps", row=row_bottom_buttons))
+        self.add_item(RoleButton("DPS", "dps", row=row_bottom_buttons))
 
-        process_menu(self.beg_menu, self.beg_list)
-        if self.int_menu:
-            process_menu(self.int_menu, self.int_list)
-        if self.adv_menu:
-            process_menu(self.adv_menu, self.adv_list)
-
-        final_bosses = list(set(final_bosses))
-
-        if not final_bosses:
-            return await interaction.response.send_message("❌ Please select at least one boss!", ephemeral=True)
-
-        view = discord.ui.View()
-        view.add_item(RoleDropdown(final_bosses, self.date, self.message))
-        await interaction.response.edit_message(content="**Step 2: Select your Roles**", view=view)
+        # Submit response button shares the final row cleanly side-by-side with the DPS options
+        self.add_item(SubmitSignupButton(self.date, self.message, row=row_bottom_buttons))
 
 
 # ==========================================================
-# SQUAD BUILDING STEPS
+# SQUAD BUILDING STEPS (Unchanged core orchestration classes)
 # ==========================================================
 
 class SquadOrchestratorView(discord.ui.View):
@@ -446,110 +464,20 @@ class MasterExportButton(discord.ui.Button):
         discord_file = discord.File(fp=io.BytesIO(output.getvalue().encode('utf-8')), filename=f"master_squads_{self.view.day}.csv")
         await interaction.followup.send(content=f"🚀 **All Squads Compiled Successfully!** Attached is your master sheet format file:", file=discord_file, ephemeral=True)
 
-
-# --- MATRICES COMBINATORIAL ALGORITHM ---
+# --- BRIDGE EXECUTION CALL FOR DECOUPLED SQUAD ENGINE ---
 async def generate_final_checklist_squad(interaction: discord.Interaction, setup: dict, orchestrator):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    from squad_engine import generate_final_checklist_squad_logic
+
+    # 1. Execute the detached background logic calculations
+    updated_rows, remaining_count, boss_label, total_squad_count = generate_final_checklist_squad_logic(
+        setup=setup,
+        active_bosses=orchestrator.active_bosses,
+        master_csv_rows=orchestrator.master_csv_rows,
+        assigned_trainees=orchestrator.assigned_trainees
+    )
     
-    boss_name = setup["boss"]
-    
-    cursor.execute("SELECT username, discord_ping, gw2_acc, roles FROM signups WHERE signup_date = ? AND training_name = ?", (setup["day"], boss_name))
-    trainees_raw = cursor.fetchall()
-    
-    lower_leads = set(x.lower() for x in setup["commanders"] + setup["aides"])
-    leader_pool = []
-    for name in setup["commanders"]:
-        cursor.execute("SELECT roles FROM leaders WHERE username = ?", (name,))
-        res = cursor.fetchone()
-        roles = [r.strip().lower() for r in res[0].split(',') if r.strip()] if res else ["dps"]
-        leader_pool.append({"name": name, "roles": roles, "type": "Commander", "assigned_role": "DPS"})
-    for name in setup["aides"]:
-        cursor.execute("SELECT roles FROM leaders WHERE username = ?", (name,))
-        res = cursor.fetchone()
-        roles = [r.strip().lower() for r in res[0].split(',') if r.strip()] if res else ["dps"]
-        leader_pool.append({"name": name, "roles": roles, "type": "Aide", "assigned_role": "DPS"})
-        
-    trainee_pool = []
-    for t_name, t_ping, t_acc, t_roles in trainees_raw:
-        if t_name.lower() not in lower_leads and t_name.lower() not in orchestrator.assigned_trainees:
-            unique_boss_names = list(set(b["boss_value"] for b in orchestrator.active_bosses))
-            if not unique_boss_names:
-                unique_boss_names = [boss_name]
-                
-            placeholders = ", ".join(["?"] * len(unique_boss_names))
-            query = f"SELECT COUNT(*) FROM signups WHERE signup_date = ? AND username = ? AND training_name IN ({placeholders})"
-            query_params = [setup["day"], t_name] + unique_boss_names
-            
-            cursor.execute(query, query_params)
-            session_boss_count = cursor.fetchone()[0]
-            
-            parsed_roles = [r.strip().lower() for r in t_roles.split(',') if r.strip()]
-            if any(role in parsed_roles for role in ["qheal", "aheal", "quickheal", "alacheal", "qhealtank", "ahealtank"]):
-                role_weight = 0
-            elif any(role in parsed_roles for role in ["qdps", "adps", "quickdps", "alacdps"]):
-                role_weight = 1
-            else:
-                role_weight = 2
-                
-            trainee_pool.append({
-                "name": t_name, "ping": t_ping, "acc": t_acc, "roles": parsed_roles,
-                "roles_raw_str": t_roles, "boss_count": session_boss_count, "role_weight": role_weight
-            })
-            
-    trainee_pool.sort(key=lambda x: (x["boss_count"], x["role_weight"]))
-    
-    needed_trainees = 10 - len(leader_pool)
-    active_trainees = trainee_pool[:min(len(trainee_pool), needed_trainees)]
-    
-    subgroup_boons = []
-    assigned_names = set()
-    
-    boon_targets = [
-        {"type": "qheal", "roles": ["qheal", "quickheal", "qhealtank", "quickhealtank"]},
-        {"type": "aheal", "roles": ["aheal", "alacheal", "ahealtank", "alachealtank"]},
-        {"type": "qdps", "roles": ["qdps", "quickdps"]},
-        {"type": "adps", "roles": ["adps", "alacdps"]}
-    ]
-    
-    import random
-    random.shuffle(boon_targets)
-    
-    for target in boon_targets:
-        found = False
-        for trainee in active_trainees:
-            if trainee["name"] not in assigned_names and any(r in trainee["roles"] for r in target["roles"]):
-                if "tank" in "".join(trainee["roles"]):
-                    trainee["assigned_role"] = "Heal Tank Quickness" if target["type"] == "qheal" else "Heal Tank Alacrity"
-                else:
-                    trainee["assigned_role"] = "Heal Quickness" if target["type"] == "qheal" else "Heal Alacrity" if target["type"] == "aheal" else "DPS Quickness" if target["type"] == "qdps" else "DPS Alacrity"
-                subgroup_boons.append(target["type"])
-                assigned_names.add(trainee["name"])
-                found = True
-                break
-        if not found:
-            for leader in leader_pool:
-                if leader["name"] not in assigned_names and any(r in leader["roles"] for r in target["roles"]):
-                    leader["assigned_role"] = "Heal Quickness" if target["type"] == "qheal" else "Heal Alacrity" if target["type"] == "aheal" else "DPS Quickness" if target["type"] == "qdps" else "DPS Alacrity"
-                    subgroup_boons.append(target["type"])
-                    assigned_names.add(leader["name"])
-                    break
-                    
-    for trainee in active_trainees:
-        if trainee["name"] not in assigned_names:
-            trainee["assigned_role"] = "DPS"
-        orchestrator.assigned_trainees.add(trainee["name"].lower())
-        
-    for leader in leader_pool:
-        if leader["name"] not in assigned_names:
-            leader["assigned_role"] = "DPS"
-            
-    cursor.execute("SELECT COUNT(DISTINCT username) FROM signups WHERE signup_date = ?", (setup["day"],))
-    res_count = cursor.fetchone()
-    total_unique_trainees = res_count[0] if res_count else 0
-    remaining_trainees_count = max(0, total_unique_trainees - len(orchestrator.assigned_trainees))
-    
-    conn.close()
+    # 2. Re-assign calculations results back onto the active view tracking references
+    orchestrator.master_csv_rows = updated_rows
     
     if "cohort_key" in setup:
         orchestrator.completed_cohorts.add(setup["cohort_key"])
@@ -558,38 +486,7 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
     orchestrator.add_item(BossSquadSelector(orchestrator.active_bosses, orchestrator_view=orchestrator))
     orchestrator.add_item(MasterExportButton())
     
-    base_label = "QTP" if setup["boss"] == "Qadim the Peerless" else setup["boss"]
-    boss_label = f"{base_label} {setup.get('squad_instance_label', 'Squad 1')}"
-    
-    from datetime import datetime
-    try:
-        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y"):
-            try:
-                clean_date = datetime.strptime(setup["day"].strip(), fmt).strftime("%Y-%m-%d")
-                break
-            except ValueError:
-                continue
-        else:
-            clean_date = setup["day"]
-    except Exception:
-        clean_date = setup["day"]
-
-    for leader in leader_pool:
-        final_role = leader.get("assigned_role", "DPS")
-        orchestrator.master_csv_rows.append([
-            leader["type"], leader["name"], f"@{leader['name']}", 
-            clean_date, setup["squad_number"], boss_label, final_role, "-", "all", "all"
-        ])
-        
-    for trainee in active_trainees:
-        final_role = trainee.get("assigned_role", "DPS")
-        orchestrator.master_csv_rows.append([
-            trainee["acc"] if trainee["acc"] else trainee["name"], trainee["name"], trainee["ping"], 
-            clean_date, setup["squad_number"], boss_label, final_role, "3", boss_label, trainee["roles_raw_str"]
-        ])
-        
     warning_text = ""
-    total_squad_count = len(leader_pool) + len(active_trainees)
     if total_squad_count < 10:
         warning_text = f"\n⚠️ *Note: This squad was parsed as a partial run due to roster limits ({total_squad_count}/10 slots filled).* "
 
@@ -597,7 +494,7 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
         title="📊 Raid Night Master Dashboard",
         description=f"✅ **{boss_label} compiled and cached successfully!**{warning_text}\n\n"
                     f"**Date Context:** `{setup['day']}`\n"
-                    f"**Remaining Unassigned Trainees:** `{remaining_trainees_count}`\n"
+                    f"**Remaining Unassigned Trainees:** `{remaining_count}`\n"
                     f"**Current master file lines:** {len(orchestrator.master_csv_rows)} tracking rows cached.\n\n"
                     "Select your next target training cohort block below to continue building, or click the red export button to finish.",
         color=discord.Color.dark_purple()
