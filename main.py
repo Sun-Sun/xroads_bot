@@ -1,14 +1,19 @@
 import os
 import discord
-from discord import app_commands
-from discord.ext import commands
 import csv
 import io
 import sqlite3
-from dotenv import load_dotenv
-from database import setup_db, save_signup, delete_signup, create_embed, update_raid_embed, wipe_date
-from datetime import datetime, timedelta
 import pytz
+from discord import app_commands
+from discord.ext import commands
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Local Module Imports
+from database import setup_db, create_embed, update_raid_embed, delete_signup, get_signup_by_date, get_user_profile, save_user_profile, remove_user_profile, save_leader_profiles_batch,  DB_PATH
+from config import STAFF_ROLES, has_leadership_role
+from ui_helpers import DeleteConfirmationView, MondayCorrectionView
+from views import PersistentSignupView, SquadOrchestratorView
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -27,7 +32,7 @@ class MyBot(commands.Bot):
         await self.tree.sync(guild=MY_GUILD)
 
         # Fetch all unique dates currently in your database
-        conn = sqlite3.connect('raids.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT signup_date FROM signups")
         dates = [row[0] for row in cursor.fetchall()]
@@ -36,25 +41,6 @@ class MyBot(commands.Bot):
         # Register a view for every date so buttons work after a restart
         for date in dates:
             self.add_view(PersistentSignupView(training_date=date))
-
-class DeleteConfirmationView(discord.ui.View):
-    def __init__(self, training_date, original_message):
-        super().__init__(timeout=60) # Times out after 1 minute
-        self.training_date = training_date
-        self.original_message = original_message
-
-    @discord.ui.button(label="Confirm Delete & Wipe", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 1. Clear DB
-        wipe_date(self.training_date)
-        # 2. Delete the actual Raid Card
-        await self.original_message.delete()
-        # 3. Clean up the confirmation message
-        await interaction.response.edit_message(content=f"🗑️ Session for {self.training_date} has been fully removed.", view=None)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="Cancelled. No changes made.", view=None)
 
 class PersistentSignupView(discord.ui.View):
     def __init__(self, training_date: str, is_locked: bool = False):
@@ -94,7 +80,6 @@ class PersistentSignupView(discord.ui.View):
             # Default fallback for users with no setup roles yet
             is_regular = False
 
-        from views import PersistentSignupView
         view = PersistentSignupView(is_regular=is_regular, date=self.training_date, message=interaction.message)
         
         if is_regular:
@@ -106,7 +91,6 @@ class PersistentSignupView(discord.ui.View):
     
     @discord.ui.button(label="Sign Out", style=discord.ButtonStyle.red)
     async def signout(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from database import delete_signup, update_raid_embed
         await interaction.response.defer(ephemeral=True)
         
         delete_signup(str(interaction.user.id), self.training_date)
@@ -118,7 +102,6 @@ class PersistentSignupView(discord.ui.View):
 
     @discord.ui.button(label="📋 Check Signup", style=discord.ButtonStyle.blurple)
     async def check_signup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from database import get_signup_by_date
         signups = get_signup_by_date(str(interaction.user.id), self.training_date)
 
         if not signups:
@@ -148,9 +131,9 @@ class PersistentSignupView(discord.ui.View):
     # --- STAFF ONLY BUTTONS ---
     
     @discord.ui.button(label="🔒 Lock", style=discord.ButtonStyle.secondary, row=1)
+    @has_leadership_role()
     async def lock_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
-        STAFF = ["Innkeeper", "Squadmaker"]
-        if not any(role.name in STAFF for role in interaction.user.roles):
+        if not any(role.name in STAFF_ROLES for role in interaction.user.roles):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
 
         self.is_locked = not self.is_locked
@@ -165,9 +148,9 @@ class PersistentSignupView(discord.ui.View):
         await interaction.response.send_message(f"✅ Session {'locked' if self.is_locked else 'unlocked'}.", ephemeral=True)
 
     @discord.ui.button(label="🗑️ Delete", style=discord.ButtonStyle.danger, row=1)
+    @has_leadership_role()
     async def remove_card(self, interaction: discord.Interaction, button: discord.ui.Button):
-        STAFF = ["Innkeeper", "Squadmaker"]
-        if not any(role.name in STAFF for role in interaction.user.roles):
+        if not any(role.name in STAFF_ROLES for role in interaction.user.roles):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
 
         view = DeleteConfirmationView(self.training_date, interaction.message)
@@ -176,24 +159,6 @@ class PersistentSignupView(discord.ui.View):
             view=view,
             ephemeral=True
         )
-
-class MondayCorrectionView(discord.ui.View):
-    def __init__(self, suggested_monday, original_interaction):
-        super().__init__(timeout=60)
-        self.suggested_monday = suggested_monday
-        self.original_interaction = original_interaction
-
-    @discord.ui.button(label="Yes, use this Monday", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # We call a modified version of your setup logic here
-        await interaction.response.defer(ephemeral=True)
-        # Assuming you have a function called run_weekly_setup
-        await run_weekly_setup(interaction, self.suggested_monday)
-        await interaction.edit_original_response(content=f"✅ Setup complete for week of {self.suggested_monday}.", view=None)
-
-    @discord.ui.button(label="No, cancel", style=discord.ButtonStyle.danger)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="❌ Setup cancelled. Please provide a valid Monday.", view=None)
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -218,6 +183,7 @@ bot = MyBot()
 
 @bot.tree.command(name="setup_week", description="Automatically setup Tuesday, Thursday, and Saturday signups")
 @app_commands.describe(monday_date="Enter the Monday of the week (YYYY-MM-DD), The bot will create signups for the following Tuesday, Thursday, and Saturday")
+@has_leadership_role()
 async def setup_week(interaction: discord.Interaction, monday_date: str):
 
     await interaction.response.defer(ephemeral=True) # Acknowledge the command to avoid timeout while processing
@@ -250,6 +216,7 @@ async def setup_week(interaction: discord.Interaction, monday_date: str):
 
 @bot.tree.command(name="setup_single", description="Setup a single raid session")
 @app_commands.describe(date="YYYY-MM-DD", title="Optional Title", start_time="HH:MM in CET (24-hour format, e.g. 20:30)")
+@has_leadership_role()
 async def setup_single(interaction: discord.Interaction, date: str, title: str = None, start_time: str = "20:00"):
     await interaction.response.defer(ephemeral=True)
 
@@ -271,11 +238,12 @@ async def setup_single(interaction: discord.Interaction, date: str, title: str =
         await interaction.followup.send("❌ Invalid **Date** format. Use YYYY-MM-DD.", ephemeral=True)
 
 @bot.tree.command(name="remove_session", description="Remove a raid session and all associated signups")
+@has_leadership_role()
 async def remove_session(interaction: discord.Interaction, date: str):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        conn = sqlite3.connect('raids.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM signups WHERE signup_date=?", (date,))
         conn.commit()
@@ -286,10 +254,10 @@ async def remove_session(interaction: discord.Interaction, date: str):
 
 @bot.tree.command(name="lock_session", description="Prevent new signups for a specific date")
 @app_commands.describe(date="Date to lock (YYYY-MM-DD)")
+@has_leadership_role()
 async def lock_session(interaction: discord.Interaction, date: str):
     await interaction.response.defer(ephemeral=True)
     
-    from database import create_embed
     # We generate a fresh embed but change the description to "LOCKED"
     embed = create_embed(date=date)
     embed.description = "🔒 **SIGNUPS ARE NOW CLOSED.**\nThis session is full or the deadline has passed."
@@ -302,6 +270,7 @@ async def lock_session(interaction: discord.Interaction, date: str):
 
 @bot.tree.command(name="training_download")
 @discord.app_commands.describe(day="The training day to download (Format: YYYY-MM-DD). Defaults to today if left blank.")
+@has_leadership_role()
 async def training_download(interaction: discord.Interaction, day: str = None):
 
     if day is None:
@@ -310,7 +279,7 @@ async def training_download(interaction: discord.Interaction, day: str = None):
         tz = pytz.timezone('Europe/Berlin') 
         day = datetime.now(tz).strftime('%Y-%m-%d')
 
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     # Updated query to include 'comment'
     cursor.execute("SELECT gw2_acc, username, discord_ping, training_name, roles, comment FROM signups WHERE signup_date=?", (day,))
@@ -337,7 +306,6 @@ async def training_download(interaction: discord.Interaction, day: str = None):
 
 @bot.tree.command(name="profile_view", description="View your saved GW2 account")
 async def profile_view(interaction: discord.Interaction):
-    from database import get_user_profile
     await interaction.response.defer(ephemeral=True)
 
     acc = get_user_profile(str(interaction.user.id))
@@ -348,7 +316,6 @@ async def profile_view(interaction: discord.Interaction):
 
 @bot.tree.command(name="profile_set", description="Save or update your GW2 account name")
 async def profile_set(interaction: discord.Interaction, account_name: str):
-    from database import save_user_profile
     await interaction.response.defer(ephemeral=True)
 
     save_user_profile(str(interaction.user.id), account_name)
@@ -356,7 +323,6 @@ async def profile_set(interaction: discord.Interaction, account_name: str):
 
 @bot.tree.command(name="profile_remove", description="Delete your saved GW2 account from the bot")
 async def profile_remove(interaction: discord.Interaction):
-    from database import remove_user_profile
     await interaction.response.defer(ephemeral=True)
 
     remove_user_profile(str(interaction.user.id))
@@ -373,7 +339,7 @@ async def training_summary(interaction: discord.Interaction, day: str = None):
         tz = pytz.timezone('Europe/Berlin') 
         day = datetime.now(tz).strftime('%Y-%m-%d')
     
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     # This query groups by the boss name and counts how many rows (signups) exist for each
@@ -412,7 +378,7 @@ async def training_summary(interaction: discord.Interaction, day: str = None):
 
 @bot.tree.command(name="sync_leaders", description="Upload and synchronize your Commander or Aide CSV file")
 @discord.app_commands.describe(file="Drag and drop your roster CSV file here")
-@discord.app_commands.checks.has_permissions(administrator=True)
+@has_leadership_role()
 async def sync_leaders(interaction: discord.Interaction, file: discord.Attachment):
     if not file.filename.endswith('.csv'):
         return await interaction.response.send_message("❌ Error: Please upload a valid `.csv` file.", ephemeral=True)
@@ -454,7 +420,6 @@ async def sync_leaders(interaction: discord.Interaction, file: discord.Attachmen
                     batch_data.append((clean_name, detected_rank, clean_roles))
             
             if batch_data:
-                from database import save_leader_profiles_batch
                 save_leader_profiles_batch(batch_data)
                 
             return len(batch_data), detected_rank
@@ -475,7 +440,7 @@ async def sync_leaders(interaction: discord.Interaction, file: discord.Attachmen
 
 @bot.tree.command(name="build_squads", description="Visually build and orchestrate raid squads step-by-step")
 @discord.app_commands.describe(day="The date to build squads for (Format: YYYY-MM-DD). Defaults to today.")
-@discord.app_commands.checks.has_permissions(administrator=True)
+@has_leadership_role()
 async def build_squads(interaction: discord.Interaction, day: str = None):
     await interaction.response.defer(ephemeral=True)
     
@@ -483,7 +448,7 @@ async def build_squads(interaction: discord.Interaction, day: str = None):
         tz = pytz.timezone('Europe/Berlin') 
         day = datetime.now(tz).strftime('%Y-%m-%d')
         
-    conn = sqlite3.connect('raids.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     # Query every unique boss running tonight alongside its trainee count
@@ -518,8 +483,6 @@ async def build_squads(interaction: discord.Interaction, day: str = None):
                 "squad_suffix": i
             })
 
-    from views import SquadOrchestratorView
-
     # 🌟 RESTORED: Re-build the clean master dashboard panel embed
     dashboard_embed = discord.Embed(
         title="📊 Raid Night Master Dashboard",
@@ -536,12 +499,12 @@ async def build_squads(interaction: discord.Interaction, day: str = None):
     await interaction.followup.send(embed=dashboard_embed, view=view, ephemeral=True)
 
 @bot.tree.command(name="backup_db", description="Download the live database file for local testing")
-@discord.app_commands.checks.has_permissions(administrator=True)
+@has_leadership_role()
 async def backup_db(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
         # Grabs the live database file and attaches it as a private download
-        with open('raids.db', 'rb') as f:
+        with open(DB_PATH, 'rb') as f:
             discord_file = discord.File(f, filename='raids.db')
             await interaction.followup.send("📦 Here is your live testing database snapshot:", file=discord_file, ephemeral=True)
     except Exception as e:

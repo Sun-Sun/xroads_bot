@@ -1,8 +1,10 @@
 import discord
 import sqlite3
-from database import get_user_profile, save_user_profile, DB_PATH
 import csv
 import io
+
+from database import get_user_profile, save_user_profile, save_signup, update_raid_embed, DB_PATH
+from squad_engine import generate_final_checklist_squad_logic
 
 # --- MODAL FOR NEW USERS (Includes Account & Consent) ---
 class FullSignupModal(discord.ui.Modal, title='Raid Training: New Profile'):
@@ -30,7 +32,6 @@ class FullSignupModal(discord.ui.Modal, title='Raid Training: New Profile'):
         self.message = message
 
     async def on_submit(self, interaction: discord.Interaction):
-        from database import save_signup, update_raid_embed
         await interaction.response.defer(ephemeral=True)
 
         if self.save_consent.value.upper() == "YES":
@@ -71,7 +72,6 @@ class QuickSignupModal(discord.ui.Modal, title='Raid Training Signup'):
         self.saved_acc = saved_acc
 
     async def on_submit(self, interaction: discord.Interaction):
-        from database import save_signup, update_raid_embed
         await interaction.response.defer(ephemeral=True)
 
         roles_str = ", ".join(self.selected_roles)
@@ -115,7 +115,6 @@ class SubmitSignupButton(discord.ui.Button):
         self.message = message
 
     async def callback(self, interaction: discord.Interaction):
-        from database import get_user_profile
         
         final_bosses = []
         for item in self.view.children:
@@ -466,7 +465,6 @@ class MasterExportButton(discord.ui.Button):
 
 # --- BRIDGE EXECUTION CALL FOR DECOUPLED SQUAD ENGINE ---
 async def generate_final_checklist_squad(interaction: discord.Interaction, setup: dict, orchestrator):
-    from squad_engine import generate_final_checklist_squad_logic
 
     # 1. Execute the detached background logic calculations
     updated_rows, remaining_count, boss_label, total_squad_count = generate_final_checklist_squad_logic(
