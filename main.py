@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from database import setup_db, create_embed, update_raid_embed, delete_signup, get_signup_by_date, get_user_profile, save_user_profile, remove_user_profile, save_leader_profiles_batch,  DB_PATH
 from config import STAFF_ROLES, has_leadership_role
 from ui_helpers import DeleteConfirmationView, MondayCorrectionView
-from views import PersistentSignupView, SquadOrchestratorView
+from views import PersistentSignupView as DropdownSignupView, SquadOrchestratorView
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -80,7 +80,7 @@ class PersistentSignupView(discord.ui.View):
             # Default fallback for users with no setup roles yet
             is_regular = False
 
-        view = PersistentSignupView(is_regular=is_regular, date=self.training_date, message=interaction.message)
+        view = DropdownSignupView(is_regular=is_regular, date=self.training_date, message=interaction.message)
         
         if is_regular:
             msg_text = "Check the bosses you want to train (use multiple menus if needed):"

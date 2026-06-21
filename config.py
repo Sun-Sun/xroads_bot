@@ -6,7 +6,7 @@ from discord import app_commands
 # GLOBAL PERMISSION CONFIGURATIONS
 # ==========================================
 STAFF_ROLES = ["Innkeeper", "Squadmaker"]
-LEADERSHIP_ROLES = ["Squadmaker", "Commander", "Aide", "Innkeeper", "Bartender"]
+LEADERSHIP_ROLES = ["Squadmaker", "Innkeeper", "Bartender"]
 
 def has_leadership_role():
     """
