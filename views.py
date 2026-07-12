@@ -115,7 +115,6 @@ class SubmitSignupButton(discord.ui.Button):
         self.message = message
 
     async def callback(self, interaction: discord.Interaction):
-        
         final_bosses = []
         for item in self.view.children:
             if isinstance(item, BossSelect) and item.values:
@@ -131,8 +130,9 @@ class SubmitSignupButton(discord.ui.Button):
 
         final_bosses = list(set(final_bosses))
 
-        if not final_bosses:
-            return await interaction.response.send_message("❌ Please select at least one boss!", ephemeral=True)
+        # 🌟 RESTORED FIX: Strict minimum 3 boss check
+        if len(final_bosses) < 3:
+            return await interaction.response.send_message("❌ Please select a minimum of 3 bosses to sign up!", ephemeral=True)
         if not self.view.selected_roles:
             return await interaction.response.send_message("❌ Please select at least one role button below!", ephemeral=True)
 
@@ -202,12 +202,10 @@ class PersistentSignupView(discord.ui.View):
             {"label": "Kaineng Overlook CM", "value": "Kaineng Overlook CM"}
         ]
 
-        # 🟢 Beginner Menu on Row 0
         self.beg_menu = BossSelect(self.beg_list, "🟢 Beginner Bosses...", "🟢", "Beginner", row=0)
         self.add_item(self.beg_menu)
 
         if is_regular:
-            # 🟡 Intermediate Menu on Row 1, 🔴 Advanced Menu on Row 2
             self.int_menu = BossSelect(self.int_list, "🟡 Intermediate Bosses...", "🟡", "Intermediate", row=1)
             self.adv_menu = BossSelect(self.adv_list, "🔴 Advanced Bosses...", "🔴", "Advanced", row=2)
             self.add_item(self.int_menu)
@@ -221,22 +219,18 @@ class PersistentSignupView(discord.ui.View):
             row_top_buttons = 1
             row_bottom_buttons = 2
 
-        # Role Buttons Grid Distribution Layout
         self.add_item(RoleButton("Heal Tank Quickness", "qhealtank", row=row_top_buttons))
         self.add_item(RoleButton("Heal Tank Alacrity", "ahealtank", row=row_top_buttons))
         self.add_item(RoleButton("Heal Quickness", "qheal", row=row_top_buttons))
         self.add_item(RoleButton("Heal Alacrity", "aheal", row=row_top_buttons))
-        
         self.add_item(RoleButton("DPS Quickness", "qdps", row=row_bottom_buttons))
         self.add_item(RoleButton("DPS Alacrity", "adps", row=row_bottom_buttons))
         self.add_item(RoleButton("DPS", "dps", row=row_bottom_buttons))
-
-        # Submit response button shares the final row cleanly side-by-side with the DPS options
         self.add_item(SubmitSignupButton(self.date, self.message, row=row_bottom_buttons))
 
 
 # ==========================================================
-# SQUAD BUILDING STEPS (Unchanged core orchestration classes)
+# SQUAD BUILDING STEPS
 # ==========================================================
 
 class SquadOrchestratorView(discord.ui.View):
@@ -249,6 +243,9 @@ class SquadOrchestratorView(discord.ui.View):
         self.master_csv_rows = []
         self.active_bosses = active_bosses
         self.completed_cohorts = set()
+        
+        # 🌟 NEW: Track suffix iterations dynamically so Squad 1 becomes Squad 2 seamlessly
+        self.boss_squad_counts = {}
         
         self.add_item(BossSquadSelector(active_bosses, orchestrator_view=self))
         self.add_item(MasterExportButton())
@@ -267,13 +264,13 @@ class BossSquadSelector(discord.ui.Select):
             ))
             
         if not options:
-            options = [discord.SelectOption(label="✅ All cohorts fully compiled!", value="done")]
+            options = [discord.SelectOption(label="✅ All available trainees assigned!", value="done")]
             disabled_state = True
         else:
             disabled_state = False
             
         super().__init__(
-            placeholder="🎯 Select a target training cohort...", 
+            placeholder="🎯 Select next training cohort...", 
             min_values=1, max_values=1, 
             options=options[:25],
             disabled=disabled_state
@@ -454,6 +451,43 @@ class MasterExportButton(discord.ui.Button):
             await interaction.followup.send("⚠️ Master output cache is completely empty! Build at least one squad target first.", ephemeral=True)
             return
 
+        # 🌟 Grabs the training_name (boss) to aggregate for UNASSIGNED backups only
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT gw2_acc, username, discord_ping, roles, training_name FROM signups WHERE signup_date = ?", (self.view.day,))
+        all_raw = cursor.fetchall()
+        conn.close()
+
+        seen_users = {}
+        for acc, user, ping, roles, boss in all_raw:
+            # Check if they are NOT in a squad and NOT a commander/aide
+            if user.lower() not in self.view.assigned_trainees and user.lower() not in self.view.assigned_leads:
+                display_boss = "QTP" if boss == "Qadim the Peerless" else boss
+                
+                if user.lower() not in seen_users:
+                    # Initialize list of bosses for this unassigned user
+                    seen_users[user.lower()] = {"acc": acc, "user": user, "ping": ping, "roles": roles, "bosses": [display_boss]}
+                else:
+                    # Append new bosses if they aren't already in the list
+                    if display_boss not in seen_users[user.lower()]["bosses"]:
+                        seen_users[user.lower()]["bosses"].append(display_boss)
+
+        for u in seen_users.values():
+            # Join their full boss list with commas
+            eligible_bosses_str = ", ".join(u["bosses"])
+            
+            self.view.master_csv_rows.append([
+                u["acc"] if u["acc"] else u["user"], # 🌟 GW2 Acc in the Rank / Role Type column
+                u["user"],                           # Character Name
+                u["ping"], 
+                self.view.day, 
+                "-", 
+                "Backup / Overflow", 
+                "-", "-", 
+                eligible_bosses_str,                 # 🌟 List of all signed-up bosses for the backup
+                u["roles"]
+            ])
+
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["Rank / Role Type", "Character Name", "Discord Tag / Ping", "Date", "Squad Number", "Boss", "Assigned Role", "Group Tier", "Eligible Bosses", "Roles Selection Profile"])
@@ -461,12 +495,13 @@ class MasterExportButton(discord.ui.Button):
         output.seek(0)
         
         discord_file = discord.File(fp=io.BytesIO(output.getvalue().encode('utf-8')), filename=f"master_squads_{self.view.day}.csv")
-        await interaction.followup.send(content=f"🚀 **All Squads Compiled Successfully!** Attached is your master sheet format file:", file=discord_file, ephemeral=True)
+        await interaction.followup.send(content=f"🚀 **All Squads Compiled Successfully!** Attached is your master sheet format file. (Contains unassigned overflow backups).", file=discord_file, ephemeral=True)
+
 
 # --- BRIDGE EXECUTION CALL FOR DECOUPLED SQUAD ENGINE ---
 async def generate_final_checklist_squad(interaction: discord.Interaction, setup: dict, orchestrator):
 
-    # 1. Execute the detached background logic calculations
+    # Execute the detached background logic calculations
     updated_rows, remaining_count, boss_label, total_squad_count = generate_final_checklist_squad_logic(
         setup=setup,
         active_bosses=orchestrator.active_bosses,
@@ -474,9 +509,39 @@ async def generate_final_checklist_squad(interaction: discord.Interaction, setup
         assigned_trainees=orchestrator.assigned_trainees
     )
     
-    # 2. Re-assign calculations results back onto the active view tracking references
+    # Re-assign calculations results back onto the active view tracking references
     orchestrator.master_csv_rows = updated_rows
     
+    # Track iteration suffixes dynamically to label the squads properly
+    orchestrator.boss_squad_counts[setup["boss"]] = orchestrator.boss_squad_counts.get(setup["boss"], 0) + 1
+    
+    # 🌟 NEW FIX: Database ping to dynamically recalculate remaining unassigned unique signups per boss
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, training_name FROM signups WHERE signup_date = ?", (setup["day"],))
+    all_signups = cursor.fetchall()
+    conn.close()
+    
+    boss_counts = {}
+    for user, boss in all_signups:
+        if user.lower() not in orchestrator.assigned_trainees and user.lower() not in orchestrator.assigned_leads:
+            boss_counts[boss] = boss_counts.get(boss, 0) + 1
+            
+    # Sort remaining active pools by popularity
+    sorted_bosses = sorted(boss_counts.items(), key=lambda x: x[1], reverse=True)
+    
+    new_active_bosses = []
+    for boss, count in sorted_bosses:
+        if count > 0:
+            next_suffix = orchestrator.boss_squad_counts.get(boss, 0) + 1
+            new_active_bosses.append({
+                "display_label": f"{boss} (Squad {next_suffix}) - {count} remaining",
+                "boss_value": boss,
+                "squad_suffix": next_suffix
+            })
+            
+    # Override dropdown pool data with fresh dynamic options
+    orchestrator.active_bosses = new_active_bosses
     if "cohort_key" in setup:
         orchestrator.completed_cohorts.add(setup["cohort_key"])
 

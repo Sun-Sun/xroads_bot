@@ -467,21 +467,14 @@ async def build_squads(interaction: discord.Interaction, day: str = None):
         await interaction.followup.send(f"❌ No training signups found for {day}.", ephemeral=True)        
         return
 
-    # 🌟 THE AUTO-DETECT MULTIPLIER MATRIX
+    # 🌟 UPDATED: Formats the initial load to perfectly match the dynamic remaining counts logic
     dynamic_squad_options = []
-    
     for boss_name, count in rows:
-        # Calculate how many 8-trainee cohorts are needed (always round up)
-        import math
-        needed_squads = math.ceil(count / 8)
-        
-        # If it needs multiple squads, append them uniquely to the dropdown options array!
-        for i in range(1, needed_squads + 1):
-            dynamic_squad_options.append({
-                "display_label": f"{boss_name} (Squad {i})",
-                "boss_value": boss_name,
-                "squad_suffix": i
-            })
+        dynamic_squad_options.append({
+            "display_label": f"{boss_name} (Squad 1) - {count} remaining",
+            "boss_value": boss_name,
+            "squad_suffix": 1
+        })
 
     # 🌟 RESTORED: Re-build the clean master dashboard panel embed
     dashboard_embed = discord.Embed(
