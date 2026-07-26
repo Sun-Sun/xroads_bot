@@ -60,6 +60,8 @@ class PersistentSignupView(discord.ui.View):
         if self.is_locked:
             self.signup.disabled = True
             self.signup.label = "Locked 🔒"
+            self.signout.disabled = True
+            self.signout.label = "Locked 🔒"
             self.lock_toggle.label = "🔓 Unlock"
             self.lock_toggle.style = discord.ButtonStyle.green
 
