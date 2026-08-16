@@ -197,8 +197,8 @@ class PersistentSignupView(discord.ui.View):
             {"label": "Decima (W8)", "value": "Decima"},
             {"label": "Ura (W8)", "value": "Ura"},
             {"label": "Kela (W9)", "value": "Kela"},
-            {"label": "Old Lions Court CM", "value": "Old Lions Court CM"}
-            {"label": "Kaineng Overlook CM", "value": "Kaineng Overlook CM"}
+            {"label": "Old Lions Court CM", "value": "Old Lions Court CM"},
+            {"label": "Kaineng Overlook CM", "value": "Kaineng Overlook CM"},
         ]
 
         self.beg_menu = BossSelect(self.beg_list, "🟢 Beginner Bosses...", "🟢", "Beginner", row=0)
