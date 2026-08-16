@@ -173,32 +173,31 @@ class PersistentSignupView(discord.ui.View):
             {"label": "Mursaat Overseer (W4)", "value": "Mursaat Overseer"},
             {"label": "Samarog (W4)", "value": "Samarog"},
             {"label": "River and Statues (W5)", "value": "River and Statues"},
-            {"label": "Aetherblade Hideout CM, Xunlai Jade Junkyard CM, Cosmic Observatory CM", "value": "Aetherblade Hideout CM, Xunlai Jade Junkyard CM, Cosmic Observatory CM"}
-        ]
+            {"label": "Strike CMs (AH, XJJ, CO)", "value": "Strike CMs (AH, XJJ, CO)"}        ]
         
         self.int_list = [
             {"label": "Sabetha (W1)", "value": "Sabetha"},
             {"label": "Slothasor (W2)", "value": "Slothasor"},
+            {"label": "Matthias (W2)", "value": "Matthias"},
             {"label": "Keep Construct (W3)", "value": "Keep Construct"},
             {"label": "Xera (W3)", "value": "Xera"},
             {"label": "Conjured Amalgamate (W6)", "value": "Conjured Amalgamate"},
-            {"label": "Twin Largos (W6)", "value": "Twin Largos"},
             {"label": "Adina (W7)", "value": "Adina"},
             {"label": "Sabir (W7)", "value": "Sabir"},
-            {"label": "Kela (W9)", "value": "Kela"},
-            {"label": "Old Lions Court CM", "value": "Old Lions Court CM"}
         ]
         
         self.adv_list = [
-            {"label": "Matthias (W2)", "value": "Matthias"},
             {"label": "Deimos (W4)", "value": "Deimos"},
             {"label": "Souless Horror (W5)", "value": "Souless Horror"},
             {"label": "Dhuum (W5)", "value": "Dhuum"},
+            {"label": "Twin Largos (W6)", "value": "Twin Largos"},
             {"label": "Qadim (W6)", "value": "Qadim"},
             {"label": "Qadim the Peerless (W7)", "value": "Qadim the Peerless"},
             {"label": "Greer (W8)", "value": "Greer"},
             {"label": "Decima (W8)", "value": "Decima"},
             {"label": "Ura (W8)", "value": "Ura"},
+            {"label": "Kela (W9)", "value": "Kela"},
+            {"label": "Old Lions Court CM", "value": "Old Lions Court CM"}
             {"label": "Kaineng Overlook CM", "value": "Kaineng Overlook CM"}
         ]
 

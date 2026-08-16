@@ -104,30 +104,37 @@ class PersistentSignupView(discord.ui.View):
 
     @discord.ui.button(label="📋 Check Signup", style=discord.ButtonStyle.blurple)
     async def check_signup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from database import get_signup_by_date
         signups = get_signup_by_date(str(interaction.user.id), self.training_date)
 
         if not signups:
            return await interaction.response.send_message("❌ You are not signed up for this date.", ephemeral=True)
         
-        # Since GW2 Acc and Discord info are the same for all rows, we take them from the first entry
-        # Based on the SELECT order in database.py: 0:acc, 1:user, 2:ping, 3:boss, 4:roles, 5:comm
         first = signups[0]
-        
-        # Build a list of all bosses signed up for
         boss_list = "\n".join([f"• **{s[4]}** (Roles: {s[5] or 'N/A'})" for s in signups])
         
-        # We take the comment from the first entry as well (or you could list them all)
-        comment = first[6] if first[6] else "No comment provided"
+        # Prevent the boss list from exceeding Discord's embed description limit (4096 chars)
+        if len(boss_list) > 3800:
+            boss_list = boss_list[:3800] + "\n... [List Truncated]"
 
-        response_text = (
-            f"📋 **Your Signup Details for {self.training_date}:**\n\n"
-            f"**GW2 Account:** `{first[3]}`\n"
-            f"**Discord:** {first[1]} ({first[2]})\n\n"
-            f"**Bosses & Roles:**\n{boss_list}\n\n"
-            f"**Comment:** {comment}"
+        embed = discord.Embed(
+            title=f"📋 Signup Details: {self.training_date}",
+            description=f"**Bosses & Roles:**\n{boss_list}",
+            color=discord.Color.blurple()
         )
+        embed.add_field(name="GW2 Account", value=f"`{first[3]}`", inline=True)
+        embed.add_field(name="Discord", value=f"{first[1]} ({first[2]})", inline=True)
 
-        await interaction.response.send_message(response_text, ephemeral=True)
+        comment = first[6] if first[6] else "No comment provided"
+        
+        # Prevent the comment from exceeding Discord's embed field value limit (1024 chars)
+        if len(comment) > 1000:
+            comment = comment[:1000] + "... [Comment Truncated]"
+            
+        embed.add_field(name="Comment", value=comment, inline=False)
+
+        # Send as an embed instead of raw text to bypass the 2000 character limit
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
     # --- STAFF ONLY BUTTONS ---
