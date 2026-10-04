@@ -54,12 +54,12 @@ def save_signup(user_id, username, discord_ping, gw2_acc, training_name, roles, 
             INSERT OR REPLACE INTO signups (user_id, username, discord_ping, gw2_acc, training_name, roles, comment, signup_date)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (user_id, username, discord_ping, gw2_acc, training_name, roles, comment, signup_date))
-        conn.commit() # CRITICAL: This pushes the data to the file
+        conn.commit()
     except Exception as e:
         print(f"Database Error: {e}")
         raise e
     finally:
-        conn.close()  # CRITICAL: This unlocks the file so create_embed can read it
+        conn.close()
 
 def save_user_profile(user_id, gw2_acc):
     conn = sqlite3.connect(DB_PATH)
@@ -116,7 +116,6 @@ def wipe_date(signup_date):
     conn.close()
 
 def save_leader_profile(username, rank, roles):
-    """Inserts or replaces a leader's profile records."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -127,16 +126,9 @@ def save_leader_profile(username, rank, roles):
     conn.close()
 
 def save_leader_profiles_batch(profiles: list):
-    """
-    Saves a list of leader profiles in a single transactional batch.
-    profiles format: [ (username, rank, roles), (username, rank, roles), ... ]
-    """
-    from database import DB_PATH
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
     try:
-        # Using an UPSERT style query (or REPLACE) depending on your schema
         cursor.executemany(
             """
             INSERT INTO leaders (username, rank, roles)
@@ -154,43 +146,41 @@ def save_leader_profiles_batch(profiles: list):
     finally:
         conn.close()
 
+
 # ==========================================
 # == EMBED CREATION & UPDATING ==
 # ==========================================
 
-import sqlite3
-import discord
-from datetime import datetime
-import pytz  # Add this import
-
 def create_embed(date, title=None, raiddescription=None, embedcolor=None, startTime="20:00"):
-    # 1. Database count logic
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # 1. Get total unique players signed up
     cursor.execute("SELECT COUNT(DISTINCT user_id) FROM signups WHERE signup_date=?", (date,))
     count = cursor.fetchone()[0]
+
+    # 🌟 NEW: 2. Fetch the top 3 most requested bosses to build the Hype Board
+    cursor.execute("""
+        SELECT training_name, COUNT(*) as signup_count 
+        FROM signups 
+        WHERE signup_date = ? 
+        GROUP BY training_name 
+        ORDER BY signup_count DESC 
+        LIMIT 3
+    """, (date,))
+    top_bosses = cursor.fetchall()
     conn.close()
 
     try:
-        # 2. Define the European Timezone (Berlin/Paris/Rome/etc are all the same)
         tz = pytz.timezone("Europe/Berlin")
-        
-        # 3. Create a "Naive" datetime object from your strings
         naive_dt = datetime.strptime(f"{date} {startTime}", "%Y-%m-%d %H:%M")
-        
-        # 4. "Localize" it. This is where pytz automatically checks the date for DST
         localized_dt = tz.localize(naive_dt)
-        
-        # 5. Get the Unix Timestamp
         unix_time = int(localized_dt.timestamp())
-        
-        # Discord Dynamic Format
         discord_time = f"<t:{unix_time}:F> (<t:{unix_time}:R>)"
     except Exception as e:
         print(f"Time conversion error: {e}")
         discord_time = f"{date} at {startTime} CET/CEST"
 
-    # 3. Build Embed (rest of your existing code)
     if not title:
         try:
             date_obj = datetime.strptime(date, "%Y-%m-%d")
@@ -205,25 +195,37 @@ def create_embed(date, title=None, raiddescription=None, embedcolor=None, startT
     )
             
     embed.add_field(name="⏰ Start Time", value=discord_time, inline=False)
-    embed.add_field(name="👥 Current Signups", value=f"{count} Player(s)", inline=True)
-    embed.add_field(name="📜 Requirements", value="Minimum 3 bosses selected", inline=True)
     
-    embed.set_footer(text="Times are localized to your device's timezone.")
+    # 🌟 NEW: Wrapped in a Markdown code block (```) for a background box effect
+    if top_bosses:
+        hype_text = "```\n"
+        for i, (boss, requests) in enumerate(top_bosses):
+            display_name = "QTP" if boss == "Qadim the Peerless" else boss
+            icon = "🔥" if i == 0 else "📈"
+            hype_text += f"{icon} {display_name}: {requests} signup(s)\n"
+        hype_text += "```"
+    else:
+        hype_text = "```\nNo signups yet. Be the first!\n```"
+
+    # Changed inline=False to give the box full width and remove horizontal clutter
+    embed.add_field(name="🎯 Trending Bosses", value=hype_text, inline=False)
+    
+    # Separated total count to its own clean line below the box
+    embed.add_field(name="👥 Total Roster Size", value=f"**{count}** Player(s)", inline=False)
+    
+    embed.set_footer(text="Requirements: Minimum 3 bosses selected | Times are localized to your device.")
     return embed
 
 async def update_raid_embed(interaction: discord.Interaction, training_date: str, message: discord.Message = None):
     """Refreshes the embed by targeting the specific card message."""
-    from database import create_embed
     new_embed = create_embed(date=training_date)
     
-    # 1. Use the explicitly passed message first (most reliable)
     target = message or interaction.message
 
     try:
         if target:
             await target.edit(embed=new_embed)
         else:
-            # 2. Fallback for interactions where the message wasn't passed
             msg = await interaction.original_response()
             await msg.edit(embed=new_embed)
     except Exception as e:
